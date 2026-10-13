@@ -1,5 +1,7 @@
 # 闹钟 Agent
 
+[![CI](https://github.com/Gablesandvines/alarm-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Gablesandvines/alarm-agent/actions/workflows/ci.yml)
+
 > 中文自然语言的「定时能力平台」。把"明早 8 点叫我""周五下午 3 点半开会"这样的口语，解析成结构化闹钟；并进一步提供**托管闹钟 + 到点 Webhook 事件投递**，让你无需自建调度即可接入"定时触发业务"。最小化服务端、数据自托管。
 
 ---
@@ -191,6 +193,8 @@ npm test                # 开放 API 集成测试（53 例，含密钥隔离、�
 ```
 
 集成测试使用独立 `test.alarm.db`，不会污染你的 `data/`。
+
+CI（GitHub Actions）在每次 push/PR 到 `main` 时自动运行上述两组测试，并校验 Docker 镜像可构建（见 `.github/workflows/ci.yml`）。
 
 ---
 

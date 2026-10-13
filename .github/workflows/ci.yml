@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: 测试（解析引擎 + 开放 API 集成）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 解析引擎回归测试
+        run: node tests/run.js
+
+      - name: 开放 API 集成测试
+        env:
+          ALARM_MASTER_KEY: ci-test-master-key-32byteslongkey1234
+        run: npm test
+
+  docker:
+    name: Docker 镜像构建校验
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建生产镜像
+        run: docker build -f deploy/Dockerfile -t alarm-agent:ci .
