@@ -11,7 +11,7 @@ let pass = 0, fail = 0;
 const failures = [];
 
 function check(c) {
-  const r = parseAlarm(c.input);
+  const r = parseAlarm(c.input, c.context ? { context: c.context } : undefined);
   const e = c.expect;
   const errs = [];
 
@@ -28,6 +28,17 @@ function check(c) {
   if (e.hasSuggestions) {
     if (!r.clarification || !Array.isArray(r.clarification.suggestions) || r.clarification.suggestions.length === 0)
       errs.push(`clarification.suggestions 应为非空`);
+  }
+
+  // 多轮澄清：partial 锚点保留断言
+  if (e.partialWeekTarget !== undefined) {
+    if (!r.partial || r.partial.weekTarget !== e.partialWeekTarget)
+      errs.push(`partial.weekTarget 期望 ${e.partialWeekTarget} 实得 ${r.partial ? r.partial.weekTarget : 'null'}`);
+  }
+  if (e.partialAbsDateMD !== undefined) {
+    const [em, ed] = e.partialAbsDateMD;
+    if (!r.partial || !r.partial.absDate || r.partial.absDate.month !== em || r.partial.absDate.day !== ed)
+      errs.push(`partial.absDate 期望 ${em}/${ed} 实得 ${r.partial && r.partial.absDate ? r.partial.absDate.month + '/' + r.partial.absDate.day : 'null'}`);
   }
 
   if (r.success) {

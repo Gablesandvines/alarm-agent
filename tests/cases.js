@@ -86,4 +86,17 @@ module.exports = [
   { input: '每周一上午9点开会',   expect: { success: true, time: '09:00', recurrence: 'weekly:1', labelIncludes: ['开会'] } },
   { input: '前天约饭',            expect: { success: false, needsClarification: true } },
   { input: '昨天下午开会',        expect: { success: false, needsClarification: true } },
+
+  // —— 多轮澄清（context 结构化合并，修复"下周一"丢上下文）——
+  // 首轮：有日期锚点但缺时刻 → 聚焦"几点"，并保留 partial
+  { input: '下周一提醒我',        expect: { success: false, needsClarification: true, clarifyType: 'time_of_day', partialWeekTarget: 1 } },
+  { input: '10月10日提醒我',      expect: { success: false, needsClarification: true, clarifyType: 'time_of_day', partialAbsDateMD: [10, 10] } },
+  // 次轮：只补"下午3点" → 与 partial(下周一) 合并，不丢日期
+  { input: '下午3点', context: { weekTarget: 1, weekNext: true }, expect: { success: true, time: '15:00', recurrence: 'none', dow: 1, nextWeek: true } },
+  { input: '晚上8点', context: { dayOffset: 1 }, expect: { success: true, time: '20:00', recurrence: 'none', future: true } },
+  { input: '上午9点', context: { absDate: { year: 2026, month: 10, day: 10 } }, expect: { success: true, dateFixed: '2026-10-10', time: '09:00', recurrence: 'none' } },
+  { input: '下午3点', context: { recurrence: 'weekly:3', weekTarget: 3 }, expect: { success: true, time: '15:00', recurrence: 'weekly:3' } },
+  // 矛盾检测：已有日期锚点却只给"相对时长" → 不静默丢弃日期，仍追问具体时刻，partial 保留
+  { input: '30分钟', context: { weekTarget: 1, weekNext: true }, expect: { success: false, needsClarification: true, clarifyType: 'time_of_day', partialWeekTarget: 1 } },
+  { input: '30分钟后', context: { weekTarget: 1, weekNext: true }, expect: { success: false, needsClarification: true, clarifyType: 'time_of_day', partialWeekTarget: 1 } },
 ];

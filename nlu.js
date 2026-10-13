@@ -83,6 +83,31 @@
     return null;
   }
 
+  // 多轮澄清：把已理解的日期/星期锚点描述成中文，用于聚焦追问
+  function describeDay(o) {
+    if (o.absDate) return (o.absDate.month || '?') + '月' + (o.absDate.day || '?') + '日';
+    if (o.weekTarget != null) {
+      const names = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+      return (o.weekNext ? '下' : '本') + names[o.weekTarget];
+    }
+    if (o.dayOffset) {
+      const map = { '1': '明天', '2': '后天', '3': '大后天', '-1': '昨天', '-2': '前天' };
+      return map[String(o.dayOffset)] || '那天';
+    }
+    return '那天';
+  }
+  // 构造 partial：仅保留已理解、但仍缺具体时刻的锚点，供下一轮结构化合并
+  function buildPartial(o) {
+    const p = {};
+    if (o.recurrence && o.recurrence !== 'none') p.recurrence = o.recurrence;
+    if (o.weekTarget != null) { p.weekTarget = o.weekTarget; p.weekNext = !!o.weekNext; }
+    else if (o.dayOffset) p.dayOffset = o.dayOffset;
+    else if (o.absDate) p.absDate = { year: o.absDate.year, month: o.absDate.month, day: o.absDate.day };
+    if (o.leadMin) p.lead_minutes = o.leadMin;
+    if (o.label) p.label = o.label;
+    return p;
+  }
+
   function parseAlarm(text, opts) {
     text = (text || '').trim();
     const consumed = [];
@@ -176,7 +201,26 @@
     // ---- 6.5 绝对日期锚点（含节假日） ----
     // 支持 opts.now 覆盖"当前时间"基准（开放 API 的确定性测试/回放）；默认取真实当前时间
     const now = (opts && opts.now != null) ? new Date(opts.now) : new Date();
-    const absDate = parseAbsDate(text) || parseHoliday(text, now);
+    let absDate = parseAbsDate(text) || parseHoliday(text, now);
+
+    // ---- 6.6 多轮澄清：用上一轮已理解的锚点补全本轮（结构化合并，避免盲目拼接丢上下文） ----
+    let contradiction = false;
+    let ctxLabel = null;
+    if (opts && opts.context) {
+      const c = opts.context;
+      ctxLabel = c.label || null;
+      const curHasDay = weekTarget !== null || dayOffset !== 0 || absDate;
+      if (!curHasDay) {
+        if (c.weekTarget != null) { weekTarget = c.weekTarget; weekNext = !!c.weekNext; }
+        else if (c.dayOffset) { dayOffset = c.dayOffset; }
+        else if (c.absDate) { absDate = { year: c.absDate.year, month: c.absDate.month, day: c.absDate.day }; }
+      }
+      if (recurrence === 'none' && c.recurrence && c.recurrence !== 'none') recurrence = c.recurrence;
+      if (leadMin === null && c.lead_minutes) leadMin = c.lead_minutes;
+      // 矛盾：已有日期锚点，但本轮只给了"相对时长"而无具体时刻 → 需要具体几点，不能静默丢弃日期
+      const ctxHasDay = c.weekTarget != null || c.dayOffset || c.absDate;
+      if (ctxHasDay && relMatch && hour === null) { contradiction = true; relMatch = null; }
+    }
 
     // ---- 7. 组合时间 ----
     const tz = 'Asia/Shanghai';
@@ -269,17 +313,31 @@
     if (!target) {
       needsClarification = true;
       confidence = Math.min(confidence, 0.3);
-      // 识别模糊时间词，生成聚焦追问（而非笼统报错），支撑多轮澄清对话
-      const VAGUE = ['待会', '等下', '等一下', '一会儿', '一会', '有空', '回头', '到时候', '稍后', '稍等', '过会儿', '随后', '之后再说', '改天', '空了', '方便时'];
-      const hit = VAGUE.find(w => text.includes(w));
-      const clarification = hit
-        ? { type: 'time_anchor', question: `「${hit}」是多久后呢？告诉我具体时间，例如：`, suggestions: ['30分钟后', '1小时后', '今晚8点', '明天早上9点'] }
-        : { type: 'unknown', question: '没听清具体时间，补充一下吧，比如「30分钟后」「明天8点」「下周一9点」。', suggestions: ['30分钟后', '1小时后', '明天8点', '下周一9点'] };
+      // 已理解日期/星期锚点但缺具体时刻 → 聚焦追问"几点"（而非笼统报错），并保留 partial 供下一轮合并
+      const hasDayAnchor = weekTarget !== null || dayOffset !== 0 || absDate;
+      let clarification;
+      if (contradiction || hasDayAnchor) {
+        const dayDesc = describeDay({ weekTarget, weekNext, dayOffset, absDate, recurrence });
+        clarification = {
+          type: 'time_of_day',
+          question: contradiction ? (dayDesc + ' 需要一个具体时刻，例如：') : (dayDesc + ' 几点？例如：'),
+          day: dayDesc,
+          suggestions: ['上午9点', '下午3点', '晚上8点', '早上7点半']
+        };
+      } else {
+        // 识别模糊时间词，生成聚焦追问（而非笼统报错），支撑多轮澄清对话
+        const VAGUE = ['待会', '等下', '等一下', '一会儿', '一会', '有空', '回头', '到时候', '稍后', '稍等', '过会儿', '随后', '之后再说', '改天', '空了', '方便时'];
+        const hit = VAGUE.find(w => text.includes(w));
+        clarification = hit
+          ? { type: 'time_anchor', question: `「${hit}」是多久后呢？告诉我具体时间，例如：`, suggestions: ['30分钟后', '1小时后', '今晚8点', '明天早上9点'] }
+          : { type: 'unknown', question: '没听清具体时间，补充一下吧，比如「30分钟后」「明天8点」「下周一9点」。', suggestions: ['30分钟后', '1小时后', '明天8点', '下周一9点'] };
+      }
       ambiguities.push(clarification.question);
       return {
         success: false, raw: text, alarm: null,
         confidence: Number(confidence.toFixed(2)),
-        needs_clarification: true, ambiguities, clarification
+        needs_clarification: true, ambiguities, clarification,
+        partial: buildPartial({ recurrence, weekTarget, weekNext, dayOffset, absDate, leadMin, label })
       };
     }
 
@@ -300,7 +358,7 @@
         recurrence: recurrence,
         timezone: tz,
         lead_minutes: leadMin || 0,
-        label: label || '(无备注)',
+        label: label || ctxLabel || '(无备注)',
         enabled: true
       },
       confidence: Number(confidence.toFixed(2)),

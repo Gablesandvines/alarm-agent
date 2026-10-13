@@ -291,6 +291,8 @@ function verifyWebhook(apiKey, url) {
 async function resolveParse(text, opts) {
   const rule = parseAlarm(text, opts);
   if (rule.success && rule.confidence >= 0.85) return { ...rule, source: 'rule' };
+  // 多轮澄清（带 context）不交给 LLM，保持确定性合并，避免乱覆盖已理解锚点
+  if (opts && opts.context) return { ...rule, source: 'rule' };
   const llm = await llmParse(text);
   if (llm) return { ...llm, source: 'llm' };
   return { ...rule, source: 'rule' };
@@ -347,7 +349,7 @@ async function handleOpenApi(req, res) {
       else nowArg = body.now;
     }
     const t0 = Date.now();
-    const result = await resolveParse(text, nowArg != null ? { now: nowArg } : undefined);
+    const result = await resolveParse(text, nowArg != null ? { now: nowArg, context: body.context } : (body.context ? { context: body.context } : undefined));
     const elapsed = Date.now() - t0;
     db.incrMetric('parse_total', 1);
     db.incrMetric('parse_latency_sum_ms', elapsed);
@@ -413,7 +415,7 @@ async function handleOpenApi(req, res) {
       if (text) {
         let nowArg = undefined;
         if (body.now != null) nowArg = typeof body.now === 'number' ? (body.now < 1e12 ? body.now * 1000 : body.now) : body.now;
-        const r = await resolveParse(text, nowArg != null ? { now: nowArg } : undefined);
+        const r = await resolveParse(text, nowArg != null ? { now: nowArg, context: body.context } : (body.context ? { context: body.context } : undefined));
         if (!r.success) return sendJSON(res, {
           success: false, needs_clarification: r.needs_clarification !== false,
           clarification: r.clarification || null, ambiguities: r.ambiguities || [], request_id: reqId
@@ -557,7 +559,7 @@ async function handleApi(req, res) {
     const body = await readBody(req);
     const text = (body.text || '').trim();
     if (!text) return sendJSON(res, { error: 'missing text' }, 400);
-    const result = await resolveParse(text);
+    const result = await resolveParse(text, body.context ? { context: body.context } : undefined);
     return sendJSON(res, { ...result });
   }
   return sendJSON(res, { error: 'not found' }, 404);

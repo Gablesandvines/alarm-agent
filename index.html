@@ -477,7 +477,7 @@
 const STORE='alarm_agent_alarms';
 let alarms=[];
 let currentParsed=null; let currentSource='rule';
-let pendingRaw=null, pendingOrigin=null;  // 多轮澄清：累积原始输入与首次意图
+let pendingRaw=null, pendingOrigin=null, pendingContext=null;  // 多轮澄清：原始输入、首次意图、已理解的锚点(partial)
 function load(){ try{ alarms=JSON.parse(localStorage.getItem(STORE))||[]; }catch(e){ alarms=[]; } }
 function save(){ localStorage.setItem(STORE, JSON.stringify(alarms)); }
 
@@ -576,21 +576,26 @@ async function doParse(){
   try{
     const text=$('input').value.trim();
     if(!text) return;
-    // 多轮澄清：把本轮补充并入待补全的原始输入，重新整体解析（pendingRaw 已含此前累积）
-    const parseText = pendingRaw ? (pendingRaw + ' ' + text) : text;
-    let r=parseAlarm(parseText); currentSource='rule';
+    // 多轮澄清：上一轮已理解部分锚点(下周一)则只补缺失字段（结构化合并，避免盲目拼接丢上下文）
+    const opts = pendingContext ? { context: pendingContext } : undefined;
+    let r=parseAlarm(text, opts); currentSource='rule';
     if(!r.success){ // 本地规则失败/需澄清 → 尝试服务端兜底（可能接 LLM）
       try{
-        const resp=await fetch('/api/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:parseText})});
-        if(resp.ok){ const sj=await resp.json(); if(sj&&sj.alarm){ r=sj; currentSource=sj.source||'llm'; } }
+        const body={text};
+        if(pendingContext) body.context=pendingContext;
+        const resp=await fetch('/api/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(resp.ok){ const sj=await resp.json(); if(sj&&(sj.alarm||sj.partial)){ r=sj; currentSource=sj.source||'llm'; } }
       }catch(e){ /* 离线/无服务端：保留规则澄清结果，体验不变 */ }
     }
     if(r.success){
-      pendingRaw=null; pendingOrigin=null; setPendingUI(false);   // 补全成功 → 结束追问
+      pendingRaw=null; pendingOrigin=null; pendingContext=null; setPendingUI(false);   // 补全成功 → 结束追问
       currentParsed=r; renderPreview();
     } else {
-      if(!pendingOrigin) pendingOrigin=text;                       // 进入/继续追问，累积原始输入
-      pendingRaw=parseText; setPendingUI(true);
+      pendingRaw = pendingRaw ? (pendingRaw + ' ' + text) : text;   // 仅用于展示原始意图
+      pendingOrigin = pendingOrigin || text;
+      // 关键：保留本轮已理解的锚点，下一轮据此合并，不再丢失"下周一"
+      pendingContext = (r.partial && Object.keys(r.partial).length) ? r.partial : (pendingContext || null);
+      setPendingUI(true);
       currentParsed=r; renderPreview();
     }
   }catch(e){ console.error(e); $('json').textContent='解析出错：'+(e&&e.message||e); }
@@ -696,8 +701,8 @@ if('serviceWorker' in navigator){ window.addEventListener('load',initPush); }
 $('pushBtn').onclick=enablePush;
 
 $('parse').onclick=doParse;
-$('clear').onclick=()=>{ $('input').value=''; currentParsed=null; pendingRaw=null; pendingOrigin=null; setPendingUI(false); renderPreview(); };
-$('pendingCancel').onclick=()=>{ pendingRaw=null; pendingOrigin=null; setPendingUI(false); currentParsed=null; renderPreview(); };
+$('clear').onclick=()=>{ $('input').value=''; currentParsed=null; pendingRaw=null; pendingOrigin=null; pendingContext=null; setPendingUI(false); renderPreview(); };
+$('pendingCancel').onclick=()=>{ pendingRaw=null; pendingOrigin=null; pendingContext=null; setPendingUI(false); currentParsed=null; renderPreview(); };
 $('save').onclick=saveAlarm;
 document.querySelectorAll('#examples span').forEach(s=>s.onclick=()=>{ $('input').value=s.textContent; doParse(); });
 
