@@ -123,6 +123,16 @@ CREATE TABLE IF NOT EXISTS legacy_alarms (
   fired INTEGER NOT NULL DEFAULT 0,
   next_trigger INTEGER
 );
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key_hash TEXT NOT NULL,
+  ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limits_key_ts ON rate_limits(key_hash, ts);
+CREATE TABLE IF NOT EXISTS metrics (
+  name TEXT PRIMARY KEY,
+  value REAL NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
 `);
 
 // 旧版以明文 key 为主键的库，迁移为哈希存储（key_hash + 加密 key_enc）
@@ -294,6 +304,51 @@ function markDeliveryRetry(id, attempt, nextAttempt, error) {
     .run(attempt, nextAttempt, status, error || null, id);
 }
 
+// ---------- 限流（持久化：重启不丢、同库多实例可共享 WAL） ----------
+function recordRateEvent(rawKey, ts) {
+  db.prepare('INSERT INTO rate_limits (key_hash, ts) VALUES (?,?)').run(hashKey(rawKey), ts);
+}
+function pruneRateEvents(rawKey, beforeMs) {
+  db.prepare('DELETE FROM rate_limits WHERE key_hash = ? AND ts < ?').run(hashKey(rawKey), beforeMs);
+}
+function rateEventCount(rawKey, sinceMs) {
+  return db.prepare('SELECT count(*) c FROM rate_limits WHERE key_hash = ? AND ts >= ?').get(hashKey(rawKey), sinceMs).c;
+}
+function oldestRateEvent(rawKey, sinceMs) {
+  const r = db.prepare('SELECT min(ts) m FROM rate_limits WHERE key_hash = ? AND ts >= ?').get(hashKey(rawKey), sinceMs);
+  return r && r.m ? r.m : null;
+}
+function checkRateLimit(rawKey, limit, windowMs) {
+  const nowMs = Date.now();
+  const since = nowMs - windowMs;
+  pruneRateEvents(rawKey, since);
+  const count = rateEventCount(rawKey, since);
+  if (count >= limit) {
+    const oldest = oldestRateEvent(rawKey, since) || nowMs;
+    const retryAfter = Math.max(1, Math.ceil((oldest + windowMs - nowMs) / 1000));
+    return { allowed: false, retryAfter };
+  }
+  recordRateEvent(rawKey, nowMs);
+  return { allowed: true };
+}
+function pruneStaleRateEvents(beforeMs) {
+  db.prepare('DELETE FROM rate_limits WHERE ts < ?').run(beforeMs);
+}
+
+// ---------- 指标（可观测性：投递成功率 / 解析耗时 等） ----------
+function incrMetric(name, delta) {
+  const d = (typeof delta === 'number' && isFinite(delta)) ? delta : 1;
+  db.prepare(`INSERT INTO metrics (name, value, updated_at) VALUES (?,?,?)
+    ON CONFLICT(name) DO UPDATE SET value = value + ?, updated_at = ?`)
+    .run(name, d, new Date().toISOString(), d, new Date().toISOString());
+}
+function getMetrics() {
+  const rows = db.prepare('SELECT name, value FROM metrics').all();
+  const o = {};
+  for (const r of rows) o[r.name] = r.value;
+  return o;
+}
+
 // ---------- 旧版库结构迁移（明文 key 主键 → 哈希存储） ----------
 function migrateKeysSchema() {
   const cols = db.prepare('PRAGMA table_info(keys)').all().map(c => c.name);
@@ -390,6 +445,7 @@ module.exports = {
   getKey, listKeys, listAllKeys, getEnabledKeyForTenant, createKey, setKeyEnabled, setWebhook,
   getAlarmsByTenant, getAlarm, findAlarmByIdempotency, saveAlarm, deleteAlarm, getAllAlarms,
   getUsage, bumpUsage,
+  checkRateLimit, pruneStaleRateEvents, incrMetric, getMetrics,
   enqueueDelivery, getDueDeliveries, markDeliverySuccess, markDeliveryRetry,
   listSubs, addSub, deleteSub, listLegacyAlarms, saveLegacyAlarm, deleteLegacyAlarm
 };

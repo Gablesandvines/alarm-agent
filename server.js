@@ -35,34 +35,111 @@ webpush.setVapidDetails('mailto:alarm-agent@example.com', vapid.publicKey, vapid
 const db = require('./db.js');
 const { PLANS } = db;
 
-// 由闹钟子对象计算下一次触发（毫秒）：一次性用绝对时间；重复类复用 computeNext
+// ---------- 时区感知工具（夏令时安全：把「墙钟 日期+时间+IANA 时区」转为 UTC 毫秒） ----------
+function tzOffsetAt(tz, epoch) {
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const p = Object.fromEntries(f.formatToParts(new Date(epoch)).map(x => [x.type, x.value]));
+  const hour = p.hour === '24' ? 0 : (+p.hour);
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, hour, +p.minute, +p.second);
+  return asUtc - epoch;
+}
+function wallToEpoch(y, mo, d, hh, mm, tz) {
+  const guess = Date.UTC(y, mo - 1, d, hh, mm, 0, 0);
+  let off = tzOffsetAt(tz, guess);
+  let utc = guess - off;
+  const off2 = tzOffsetAt(tz, utc); // DST 边界二次修正（处理春进/秋退切换日）
+  if (off2 !== off) utc = guess - off2;
+  return utc;
+}
+function tzDateParts(epoch, tz) {
+  const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const p = Object.fromEntries(f.formatToParts(new Date(epoch)).map(x => [x.type, x.value]));
+  return { y: +p.year, mo: +p.month, d: +p.day };
+}
+function addDays(y, mo, d, n) { const dt = new Date(Date.UTC(y, mo - 1, d)); dt.setUTCDate(dt.getUTCDate() + n); return { y: dt.getUTCFullYear(), mo: dt.getUTCMonth() + 1, d: dt.getUTCDate() }; }
+function daysInMonth(y, mo) { return new Date(Date.UTC(y, mo, 0)).getUTCDate(); }
+function weekdayOf(y, mo, d) { return new Date(Date.UTC(y, mo - 1, d)).getUTCDay(); }
+
+// ---------- 结构化日志（JSON 行，便于采集到 Loki / ELK / 云端日志） ----------
+function log(level, event, fields) {
+  const obj = { ts: new Date().toISOString(), level, event };
+  if (fields) Object.assign(obj, fields);
+  process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+// 由闹钟子对象计算下一次触发（毫秒）：一次性优先用绝对时间戳；显式 date+time 按闹钟时区换算（夏令时安全）
 function nextTriggerMs(alarm) {
   const rec = alarm.recurrence || 'none';
+  const tz = alarm.timezone || 'Asia/Shanghai';
   if (rec === 'none') {
     if (alarm.timestamp) return alarm.timestamp * 1000;
     if (alarm.date && alarm.time) {
       const [Y, M, D] = alarm.date.split('-').map(Number);
       const [hh, mm] = alarm.time.split(':').map(Number);
-      return new Date(Y, M - 1, D, hh, mm, 0, 0).getTime();
+      return wallToEpoch(Y, M, D, hh, mm, tz);
     }
     return null;
   }
   const anchor = (alarm.timestamp || Math.floor(Date.now() / 1000)) * 1000;
-  return computeNext(alarm.time, rec, anchor);
+  return computeNext(alarm.time, rec, anchor, tz);
 }
 
-// ---------- 重复规则：计算下一次触发（与前端一致） ----------
-function computeNext(time, recurrence, anchorTs) {
+// ---------- 重复规则：计算下一次触发（时区感知，支持夏令时 + 月度） ----------
+function computeNext(time, recurrence, anchorTs, timezone) {
+  const tz = timezone || 'Asia/Shanghai';
   const now = Date.now();
   const [hh, mm] = time.split(':').map(Number);
-  const at = d => new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm, 0, 0).getTime();
   if (recurrence === 'none') return null;
-  if (recurrence === 'daily') { let t = at(new Date()); while (t < now) t += 86400000; return t; }
-  if (recurrence === 'weekdays') { let t = at(new Date()), g = 0; while (([0, 6].includes(new Date(t).getDay()) || t < now) && g < 12) { t += 86400000; g++; } return t; }
-  if (recurrence === 'weekend') { let t = at(new Date()), g = 0; while ((![0, 6].includes(new Date(t).getDay()) || t < now) && g < 12) { t += 86400000; g++; } return t; }
-  if (recurrence.startsWith('weekly:')) { const w = parseInt(recurrence.split(':')[1], 10); let t = at(new Date()), g = 0; while ((new Date(t).getDay() !== w || t < now) && g < 12) { t += 86400000; g++; } return t; }
-  if (recurrence.startsWith('every:')) { const n = parseInt(recurrence.split(':')[1], 10) || 1; let t = anchorTs; let g = 0; while (g < 500) { const d = new Date(t); const cand = at(new Date(d.getFullYear(), d.getMonth(), d.getDate())); if (cand >= now) return cand; t += n * 86400000; g++; } return null; }
-  if (recurrence.startsWith('biweekly:')) { const w = parseInt(recurrence.split(':')[1], 10); const EPOCH = Date.UTC(2024, 0, 1); const monOf = ts => { const x = new Date(ts); const o = (x.getDay() + 6) % 7; x.setDate(x.getDate() - o); x.setHours(0, 0, 0, 0); return x.getTime(); }; let t = at(new Date(anchorTs)), g = 0; while (g < 60) { const dow = new Date(t).getDay(); const wk = Math.round((monOf(t) - monOf(EPOCH)) / (7 * 86400000)); if (dow === w && t >= now && wk % 2 === 0) return t; t += 86400000; g++; } return null; }
+  if (!/^\d{1,2}:\d{2}$/.test(time)) return null;
+  const at = (y, mo, d) => wallToEpoch(y, mo, d, hh, mm, tz);
+  // 以「时区内的日历日」为步进来找下一次触发，避免本地时区与闹钟时区错位
+  if (recurrence === 'daily') {
+    let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
+    while (t < now && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
+    return t;
+  }
+  if (recurrence === 'weekdays') {
+    let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
+    while ((weekdayOf(cur.y, cur.mo, cur.d) === 0 || weekdayOf(cur.y, cur.mo, cur.d) === 6 || t < now) && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
+    return t;
+  }
+  if (recurrence === 'weekend') {
+    let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
+    while ((weekdayOf(cur.y, cur.mo, cur.d) !== 0 && weekdayOf(cur.y, cur.mo, cur.d) !== 6 || t < now) && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
+    return t;
+  }
+  if (recurrence.startsWith('weekly:')) {
+    const w = parseInt(recurrence.split(':')[1], 10);
+    let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
+    while ((weekdayOf(cur.y, cur.mo, cur.d) !== w || t < now) && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
+    return t;
+  }
+  if (recurrence.startsWith('every:')) {
+    const n = parseInt(recurrence.split(':')[1], 10) || 1;
+    let cur = tzDateParts(anchorTs, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
+    while (g < 600) { if (t >= now) return t; cur = addDays(cur.y, cur.mo, cur.d, n); t = at(cur.y, cur.mo, cur.d); g++; }
+    return null;
+  }
+  if (recurrence.startsWith('biweekly:')) {
+    const w = parseInt(recurrence.split(':')[1], 10);
+    const EPOCH = Date.UTC(2024, 0, 1);
+    const monOf = ts => { const x = tzDateParts(ts, tz); const dx = new Date(Date.UTC(x.y, x.mo - 1, x.d)); const o = (dx.getUTCDay() + 6) % 7; dx.setUTCDate(dx.getUTCDate() - o); return dx.getTime(); };
+    let cur = tzDateParts(anchorTs, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
+    while (g < 120) { const dow = weekdayOf(cur.y, cur.mo, cur.d); const wk = Math.round((monOf(t) - EPOCH) / (7 * 86400000)); if (dow === w && t >= now && wk % 2 === 0) return t; cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
+    return null;
+  }
+  if (recurrence.startsWith('monthly:')) {
+    const day = parseInt(recurrence.split(':')[1], 10);
+    let cur = tzDateParts(now, tz); let y = cur.y, mo = cur.mo, g = 0;
+    while (g < 36) {
+      const dd = Math.min(day, daysInMonth(y, mo));
+      const t = at(y, mo, dd);
+      if (t >= now) return t;
+      mo++; if (mo > 12) { mo = 1; y++; }
+      g++;
+    }
+    return null;
+  }
   return null;
 }
 
@@ -134,22 +211,9 @@ function standardError(res, code, message, status, reqId) {
   return sendJSON(res, { error: { code, message }, request_id: reqId }, status);
 }
 
-// ---------- 限流（按 key 滑动窗口，默认 60/min） ----------
+// ---------- 限流（按 key 滑动窗口，默认 60/min；持久化到 SQLite，重启不丢） ----------
 const RATE_WINDOW_MS = 60000;
-const rateBuckets = new Map(); // key -> number[]（时间戳）
-function checkRateLimit(key, limit) {
-  const nowMs = Date.now();
-  const arr = rateBuckets.get(key) || [];
-  const fresh = arr.filter(t => nowMs - t < RATE_WINDOW_MS);
-  if (fresh.length >= limit) {
-    rateBuckets.set(key, fresh);
-    const retryAfter = Math.ceil((fresh[0] + RATE_WINDOW_MS - nowMs) / 1000);
-    return { allowed: false, retryAfter };
-  }
-  fresh.push(nowMs);
-  rateBuckets.set(key, fresh);
-  return { allowed: true };
-}
+// 旧的内存态实现已迁移到 db.checkRateLimit（见下方调用处）。
 
 // ---------- 用量计量（按 key 计，为计费打地基；存储已迁移至 db.js） ----------
 function getUsage(key) { return db.getUsage(key); }
@@ -170,6 +234,7 @@ function enqueueWebhookDelivery(rawKey, url, a, nowMs) {
   });
   const sig = rawKey ? crypto.createHmac('sha256', rawKey).update(payload).digest('hex') : '';
   db.enqueueDelivery({ tenant: a.tenant, url, body: payload, sig: 'sha256=' + sig });
+  db.incrMetric('delivery_enqueued', 1);
 }
 
 // ---------- Webhook 投递 worker（持久化队列 + 指数退避，最多 8 次） ----------
@@ -191,14 +256,30 @@ setInterval(async () => {
     for (const d of due) {
       try {
         const ok = await postWebhookOnce(d.url, d.body, d.sig);
-        if (ok) db.markDeliverySuccess(d.id);
-        else db.markDeliveryRetry(d.id, d.attempt + 1, Date.now() + deliveryBackoffMs(d.attempt), 'HTTP 非 2xx');
+        if (ok) {
+          db.markDeliverySuccess(d.id);
+          db.incrMetric('delivery_success', 1);
+          log('info', 'delivery_success', { id: d.id, tenant: d.tenant });
+        } else {
+          const attempt = d.attempt + 1;
+          const final = attempt >= db.DELIVERY_MAX_ATTEMPTS;
+          db.markDeliveryRetry(d.id, attempt, Date.now() + deliveryBackoffMs(d.attempt), 'HTTP 非 2xx');
+          if (final) { db.incrMetric('delivery_failed_final', 1); log('error', 'delivery_failed_final', { id: d.id, tenant: d.tenant, attempts: attempt }); }
+          else { db.incrMetric('delivery_attempts_failed', 1); }
+        }
       } catch (e) {
-        db.markDeliveryRetry(d.id, d.attempt + 1, Date.now() + deliveryBackoffMs(d.attempt), e.message);
+        const attempt = d.attempt + 1;
+        const final = attempt >= db.DELIVERY_MAX_ATTEMPTS;
+        db.markDeliveryRetry(d.id, attempt, Date.now() + deliveryBackoffMs(d.attempt), e.message);
+        if (final) { db.incrMetric('delivery_failed_final', 1); log('error', 'delivery_failed_final', { id: d.id, tenant: d.tenant, error: e.message }); }
+        else { db.incrMetric('delivery_attempts_failed', 1); }
       }
     }
-  } catch (e) { console.warn('[delivery] 队列处理异常', e.message); }
+  } catch (e) { log('error', 'delivery_worker_error', { error: e.message }); }
 }, 1000);
+
+// 定期清理过期限流记录，避免 rate_limits 表无限增长
+setInterval(() => { try { db.pruneStaleRateEvents(Date.now() - RATE_WINDOW_MS); } catch (e) {} }, 60000);
 function verifyWebhook(apiKey, url) {
   const body = JSON.stringify({ event: 'webhook.test', challenge: crypto.randomBytes(8).toString('hex'), message: 'Alarm Agent webhook 连通性测试' });
   const sig = apiKey ? crypto.createHmac('sha256', apiKey).update(body).digest('hex') : '';
@@ -239,10 +320,11 @@ async function handleOpenApi(req, res) {
   if (!k) return standardError(res, 'invalid_api_key', 'API Key 无效或已禁用', 401, reqId);
   if (k.enabled === false) return standardError(res, 'key_disabled', '该 API Key 已被禁用', 403, reqId);
 
-  // 限流（按 key 滑动窗口）
+  // 限流（按 key 滑动窗口；持久化到 SQLite，重启不丢、同库多实例可共享）
   const limit = (typeof k.rate_limit === 'number' && k.rate_limit > 0) ? k.rate_limit : 60;
-  const rl = checkRateLimit(k.key, limit);
+  const rl = db.checkRateLimit(k.key, limit, RATE_WINDOW_MS);
   if (!rl.allowed) {
+    log('warn', 'rate_limited', { key: k.key.slice(0, 10) + '…', limit, retry_after: rl.retryAfter });
     res.setHeader('Retry-After', String(rl.retryAfter));
     return standardError(res, 'rate_limited', '请求过于频繁，请稍后重试', 429, reqId);
   }
@@ -264,14 +346,34 @@ async function handleOpenApi(req, res) {
       if (typeof body.now === 'number') nowArg = body.now < 1e12 ? body.now * 1000 : body.now;
       else nowArg = body.now;
     }
+    const t0 = Date.now();
     const result = await resolveParse(text, nowArg != null ? { now: nowArg } : undefined);
+    const elapsed = Date.now() - t0;
+    db.incrMetric('parse_total', 1);
+    db.incrMetric('parse_latency_sum_ms', elapsed);
     bumpUsage(k.key, 'parse_count');
+    log('info', 'parse', { tenant: k.tenant, source: result.source, latency_ms: elapsed, length: text.length });
     return sendJSON(res, { ...result, request_id: reqId });
   }
 
   // ---------- 用量查询（本 key） ----------
   if (url === '/v1/usage' && req.method === 'GET') {
     return sendJSON(res, { tenant: k.tenant, usage: getUsage(k.key), request_id: reqId });
+  }
+
+  // ---------- 指标（全局聚合：投递成功率 / 解析耗时 等） ----------
+  if (url === '/v1/metrics' && req.method === 'GET') {
+    const m = db.getMetrics();
+    const parseTotal = m.parse_total || 0, latencySum = m.parse_latency_sum_ms || 0;
+    const succ = m.delivery_success || 0, fail = m.delivery_failed_final || 0;
+    return sendJSON(res, {
+      metrics: m,
+      derived: {
+        parse_avg_latency_ms: parseTotal ? Number((latencySum / parseTotal).toFixed(2)) : 0,
+        delivery_success_rate: (succ + fail) > 0 ? Number((succ / (succ + fail)).toFixed(4)) : null
+      },
+      request_id: reqId
+    });
   }
 
   // ---------- Webhook 配置（租户级回调 URL） ----------

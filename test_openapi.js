@@ -235,6 +235,11 @@ function assert(cond, name, extra) {
   assert(usj.usage.parse_count >= 1, 'parse_count ≥ 1（解析接口被调用过）', 'parse_count=' + usj.usage.parse_count);
   assert(usj.usage.fire_count >= 1, 'fire_count ≥ 1（触发投递发生过）', 'fire_count=' + usj.usage.fire_count);
 
+  // 指标端点（可观测性）
+  let mt = await req('GET', '/v1/metrics', { Authorization: 'Bearer ' + NORMAL_KEY }, null);
+  let mtj = JSON.parse(mt.body);
+  assert(mt.status === 200 && mtj.metrics && typeof mtj.metrics.parse_total === 'number' && mtj.derived && typeof mtj.derived.parse_avg_latency_ms === 'number', 'GET /v1/metrics → 200 含聚合指标与派生量', mt.status);
+
   // 崩溃恢复：直接写入一条「已存在」的 pending 投递，验证 worker 会续传处理（进程重启后同理）
   const recId = 'recovery-' + Date.now();
   const recBody = JSON.stringify({ event: 'alarm.fired', alarm_id: recId, tenant: 'testA', text: 'recovery', alarm: { time: '08:00' }, fired_at: new Date().toISOString() });

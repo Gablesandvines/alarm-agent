@@ -30,6 +30,8 @@ module.exports = [
   { input: '每天晚上10点睡觉',    expect: { success: true, time: '22:00', recurrence: 'daily', labelIncludes: ['睡觉'] } },
   { input: '工作日早上7点半起床', expect: { success: true, time: '07:30', recurrence: 'weekdays', labelIncludes: ['起床'] } },
   { input: '周末上午10点逛街',    expect: { success: true, time: '10:00', recurrence: 'weekend', labelIncludes: ['逛街'] } },
+  { input: '每月5号早上9点交房租', expect: { success: true, time: '09:00', recurrence: 'monthly:5', labelIncludes: ['交房租'] } },
+  { input: '每个月15日下午3点还信用卡', expect: { success: true, time: '15:00', recurrence: 'monthly:15', labelIncludes: ['信用卡'] } },
 
   // —— 相对时间 ——
   { input: '30分钟后提醒我开会',  expect: { success: true, relSeconds: 30 * 60, labelIncludes: ['开会'] } },

@@ -99,6 +99,7 @@
     else if ((m = text.match(/每([零一二两三四五六七八九十百\d]+)天/))) { recurrence = 'every:' + cnNum(m[1]); consumed.push(m[0]); }
     else if ((m = text.match(/(隔|双)(周|星期|礼拜|个)([一二三四五六日天七\d])/))) { recurrence = 'biweekly:' + weekNum(m[3]); consumed.push(m[0]); }
     else if ((m = text.match(/(每周|每星期|每个礼拜)([一二三四五六日天七\d])/))) { recurrence = 'weekly:' + weekNum(m[2]); consumed.push(m[0]); }
+    else if ((m = text.match(/(每个月|每月)(\d{1,2}|[一二两三四五六七八九十]+)(号|日)/))) { recurrence = 'monthly:' + cnNum(m[2]); consumed.push(m[0]); }
 
     // ---- 2. 相对时间（必须带"后/以后"后缀，避免与"提前X分钟"冲突） ----
     let relMatch = null;
