@@ -1,0 +1,14 @@
+{
+  "name": "闹钟 Agent",
+  "short_name": "闹钟Agent",
+  "description": "用自然语言一句话设置闹钟，到点通知+铃声提醒。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6fb",
+  "theme_color": "#3b6cf6",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

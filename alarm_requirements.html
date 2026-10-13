@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>闹钟 Agent Web 应用 · 需求设计与评估</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1f2533; --sub:#5b6472;
+    --line:#e6e9ef; --brand:#3b6cf6; --brand2:#22a17a; --warn:#e0883b;
+    --bad:#d9534f; --good:#2f9e6e; --chip:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.7;font-size:15px}
+  .wrap{max-width:960px;margin:0 auto;padding:32px 24px 80px}
+  header.hero{background:linear-gradient(135deg,#3b6cf6,#5b8def);color:#fff;border-radius:18px;
+    padding:34px 32px;margin-bottom:28px}
+  header.hero h1{margin:0 0 8px;font-size:26px;letter-spacing:.5px}
+  header.hero p{margin:0;opacity:.92;font-size:15px}
+  .tag{display:inline-block;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.3);
+    padding:3px 10px;border-radius:999px;font-size:12px;margin-right:8px;margin-top:10px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:24px 26px;margin-bottom:20px;box-shadow:0 1px 3px rgba(20,30,60,.04)}
+  h2{font-size:19px;margin:0 0 14px;padding-left:12px;border-left:4px solid var(--brand);
+     display:flex;align-items:center;gap:8px}
+  h3{font-size:15px;color:var(--sub);margin:18px 0 8px}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:#f3f6fc;color:var(--ink);font-weight:600}
+  tr:nth-child(even) td{background:#fafbfe}
+  code{background:var(--chip);color:#2a3a8f;padding:1px 6px;border-radius:5px;font-size:13px;
+    font-family:"SFMono-Regular",Consolas,Menlo,monospace}
+  pre{background:#0f1729;color:#e6edf7;padding:16px 18px;border-radius:10px;overflow:auto;
+    font-size:13px;line-height:1.55;font-family:"SFMono-Regular",Consolas,Menlo,monospace}
+  .pre-title{font-size:13px;color:var(--sub);margin:14px 0 6px;font-weight:600}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  .kpi{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0}
+  .kpi .box{flex:1;min-width:140px;background:#f6f9ff;border:1px solid #dfe8ff;border-radius:12px;padding:14px}
+  .kpi .n{font-size:22px;font-weight:700;color:var(--brand)}
+  .kpi .l{font-size:12px;color:var(--sub)}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
+  .pill.done{background:#e6f7ef;color:#1f9d57}
+  .p0{background:#fdeaea;color:#c0392b}
+  .p1{background:#fff4e2;color:#b9770e}
+  .p2{background:#eaf3ff;color:#2f6bd8}
+  .risk{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px dashed var(--line)}
+  .risk:last-child{border-bottom:none}
+  .sev{flex:0 0 64px;text-align:center;font-weight:700;font-size:12px;padding:5px 0;border-radius:8px}
+  .sev.h{background:#fdeaea;color:#c0392b}
+  .sev.m{background:#fff4e2;color:#b9770e}
+  .sev.l{background:#eafaf1;color:#2f9e6e}
+  .risk .body{flex:1}
+  .risk .body b{color:var(--ink)}
+  .rec{background:linear-gradient(135deg,#eafaf1,#f3fbf7);border:1px solid #bfe9cf;border-radius:12px;padding:16px 18px;margin-top:6px}
+  .rec .go{display:inline-block;background:var(--good);color:#fff;padding:4px 14px;border-radius:999px;font-weight:700;margin-right:10px}
+  .note{background:#fff8ec;border:1px solid #ffe2b0;border-radius:10px;padding:12px 14px;color:#7a5a1f;font-size:13.5px}
+  .foot{color:var(--sub);font-size:12.5px;text-align:center;margin-top:24px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>闹钟 Agent · Web 应用需求设计与评估</h1>
+  <p>用自然语言一句话设置闹钟：理解时间、返回结构化 JSON、并在到点时可靠提醒。本文档梳理需求、给出技术方案与可行性评估，并附可交互原型。</p>
+  <div>
+    <span class="tag">场景 #17 · Agent 应用</span>
+    <span class="tag">形态：Web / PWA</span>
+    <span class="tag">核心：NL → 时间 → JSON</span>
+    <span class="tag">版本 v1.0（路线图已对齐）</span>
+  </div>
+</header>
+
+<!-- 一、概述 -->
+<section>
+  <h2>一、项目概述</h2>
+  <p><b>目标：</b>用户用日常口语即可设置闹钟，例如「明天早上 8 点叫我起床」「30 分钟后提醒我开会」。系统通过自然语言理解（NLU）解析出对应的触发时间，输出统一 JSON，并在到点时通过浏览器通知 + 铃声提醒。</p>
+  <p><b>核心价值：</b>零学习成本、口语化交互；相比传统「滚轮子选时间」的闹钟，输入效率更高、更自然。可作为独立工具，也可作为其他 Agent 的「定时提醒」能力模块。</p>
+  <p><b>形态建议：</b>纯前端 Web 应用（H5），进阶为 <b>PWA（可安装、可离线、可后台）</b>，避免服务端成本。这与现有项目「无服务端、预留 key 位降低成本」的思路一致。</p>
+</section>
+
+<!-- 二、用户与场景 -->
+<section>
+  <h2>二、目标用户与使用场景</h2>
+  <table>
+    <thead><tr><th>角色</th><th>典型场景</th><th>口语示例</th></tr></thead>
+    <tbody>
+      <tr><td>通勤/办公族</td><td>起床、吃药、开会、下班</td><td>「明天 7 点半叫我」「每天晚上 10 点提醒睡觉」</td></tr>
+      <tr><td>学生</td><td>上课、自习、作息</td><td>「下周一 9 点有课」「半小时后去食堂」</td></tr>
+      <tr><td>临时备忘</td><td>煮蛋、停车、洗衣</td><td>「8 分钟后看锅」「20 分钟后来取快递」</td></tr>
+      <tr><td>跨时区差旅</td><td>航班、酒店退房</td><td>「东京时间明早 6 点起床」（进阶）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 三、核心能力 -->
+<section>
+  <h2>三、核心能力定义（MVP → 完整）</h2>
+  <div class="grid2">
+    <div>
+      <h3>MVP（P0，必须）</h3>
+      <ul>
+        <li>自然语言输入 → 时间解析 → JSON 输出</li>
+        <li>相对时间（X 分钟后/小时后）</li>
+        <li>绝对时间（今天/明天/周X/日期 + 早上/下午/晚上 + 点分）</li>
+        <li>单次闹钟的创建、列表、删除、启用/停用</li>
+        <li>到点提醒：浏览器通知 + 铃声</li>
+        <li>备注/标签（如「叫我起床」）</li>
+      </ul>
+    </div>
+    <div>
+      <h3>完整（P1/P2，迭代）</h3>
+      <ul>
+        <li>重复闹钟（每天/工作日/周末/每周X）</li>
+        <li>LLM 兜底解析长尾口语</li>
+        <li>歧义澄清交互（「早上还是晚上？」）</li>
+        <li>多端同步 / 账号（需服务端）</li>
+        <li>节假日/农历（春节、端午等）</li>
+        <li>智能建议（相似闹钟去重）</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 四、NL 时间解析能力范围 -->
+<section>
+  <h2>四、自然语言时间解析能力范围（最关键）</h2>
+  <p>这是整个产品的技术核心与最大价值点。下方为覆盖能力矩阵：</p>
+  <table>
+    <thead><tr><th>类别</th><th>覆盖示例</th><th>解析结果</th></tr></thead>
+    <tbody>
+      <tr><td>相对时间</td><td>「30 分钟后」「两小时后」「半小时后」「10 秒钟后」</td><td>now + Δ</td></tr>
+      <tr><td>绝对·日锚点</td><td>「今天 / 明天 / 后天 / 大后天 / 昨天」</td><td>±N 天</td></tr>
+      <tr><td>绝对·星期</td><td>「周一」「下周一」「本周三」「礼拜天」</td><td>最近的下一个该星期</td></tr>
+      <tr><td>绝对·日期</td><td>「10 月 1 日」「1 号」「2026-10-10」「2027 年春节」</td><td>指定日期（已支持阳历固定+近年份农历）</td></tr>
+      <tr><td>时段词</td><td>「凌晨 / 早上 / 上午 / 中午 / 下午 / 傍晚 / 晚上 / 深夜」</td><td>小时校正（下午3点→15）</td></tr>
+      <tr><td>时刻</td><td>「8 点」「8 点半」「8 点一刻」「8 点 20」「08:30」</td><td>HH:mm</td></tr>
+      <tr><td>重复</td><td>「每天 / 每日」「工作日」「周末」「每周一」「每3天」「隔周六 / 双周一」</td><td>recurrence：daily / weekdays / weekend / weekly:N / every:N / biweekly:N</td></tr>
+      <tr><td>提前提醒</td><td>「提前10分钟 / 提前半小时」</td><td>lead_minutes，触发时间自动前移</td></tr>
+      <tr><td>模糊</td><td>「待会 / 一会 / 稍后」</td><td>需澄清（needs_clarification）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>JSON 输出规范（Schema）</h3>
+  <p class="pre-title">成功解析</p>
+<pre>{
+  "success": true,
+  "raw": "明天早上8点叫我起床",
+    "alarm": {
+    "timestamp": 1791590400,          // Unix 秒级时间戳（UTC），便于调度/排序
+    "datetime": "2026-10-10T08:00:00+08:00",
+    "date": "2026-10-10",
+    "time": "08:00",
+    "recurrence": "none",        // none | daily | weekdays | weekend | weekly:N | every:N | biweekly:N
+    "lead_minutes": 0,           // 提前提醒分钟数（0=不提前）；如「提前10分钟」=10，触发时间自动前移
+    "timezone": "Asia/Shanghai",
+    "label": "叫我起床",
+    "enabled": true
+  },
+  "confidence": 0.95,
+  "needs_clarification": false,
+  "ambiguities": []
+}</pre>
+  <p class="pre-title">解析失败 / 需澄清</p>
+<pre>{
+  "success": false,
+  "raw": "待会提醒我",
+  "alarm": null,
+  "confidence": 0.3,
+  "needs_clarification": true,
+  "ambiguities": ["未识别到具体时间，请补充如『30分钟后』或『明天8点』"]
+}</pre>
+  <div class="note"><b>设计要点：</b>① <code>timestamp</code> 为 Unix 秒级时间戳（UTC），直接可用于定时器/排序；② <code>datetime</code> 用 ISO 8601 含时区，便于人类阅读与跨端；③ <code>recurrence</code> 用枚举+参数，便于重复计算（<code>weekly:N</code> 每週N、<code>every:N</code> 每N天、<code>biweekly:N</code> 隔周N）；④ <code>lead_minutes</code> 支持「提前X分钟/小时提醒」，触发时间自动前移；⑤ <code>confidence</code> 与 <code>needs_clarification</code> 让前端决定是否追问，是「Agent 感」的关键。</p></div>
+</section>
+
+<!-- 五、功能清单 -->
+<section>
+  <h2>五、产品功能清单（优先级）</h2>
+  <table>
+    <thead><tr><th>编号</th><th>功能</th><th>优先级</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>F1</td><td>NL 输入与解析</td><td><span class="pill p0">P0</span></td><td>中文口语 → JSON（规则+词典引擎）</td></tr>
+      <tr><td>F2</td><td>闹钟创建/列表/删除/启停</td><td><span class="pill p0">P0</span></td><td>本地存储，列表展示下次触发时间</td></tr>
+      <tr><td>F3</td><td>到点提醒</td><td><span class="pill p0">P0</span></td><td>Notification API + Web Audio 铃声</td></tr>
+      <tr><td>F4</td><td>备注/标签</td><td><span class="pill p0">P0</span></td><td>从口语中剥离的非时间文本</td></tr>
+      <tr><td>F5</td><td>重复闹钟</td><td><span class="pill p1">P1</span></td><td>daily / weekdays / weekend / weekly:N / every:N / biweekly:N</td></tr>
+      <tr><td>F5b</td><td>提前提醒</td><td><span class="pill p1">P1</span></td><td>lead_minutes，触发时间自动前移</td></tr>
+      <tr><td>F6</td><td>LLM 兜底解析</td><td><span class="pill p1">P1</span></td><td>规则未命中时调用 LLM，预留 key 位（<code>/api/parse</code> 已落地）</td></tr>
+      <tr><td>F7</td><td>歧义澄清对话</td><td><span class="pill p1">P1</span></td><td>多义时间引导用户确认</td></tr>
+      <tr><td>F8</td><td>多端同步/账号</td><td><span class="pill p2">P2</span></td><td>需服务端或云存储</td></tr>
+      <tr><td>F9</td><td>节假日/农历</td><td><span class="pill p2">P2</span></td><td>春节、端午、中秋等（阳历固定+近年份农历已支持）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 六、非功能 -->
+<section>
+  <h2>六、非功能需求</h2>
+  <ul>
+    <li><b>可靠性（最高优先）：</b>闹钟到点必须触发。纯前端在标签页关闭/浏览器退出后无法保证——这是最大约束，方案见第七节。</li>
+    <li><b>性能：</b>解析在毫秒级完成（规则引擎本地计算）；列表与提醒调度轻量。</li>
+    <li><b>隐私：</b>闹钟数据默认仅存本地（localStorage/IndexedDB），不上传；仅当用户启用「云端同步/LLM 兜底」时才联网。</li>
+    <li><b>离线：</b>规则引擎与提醒调度应离线可用（PWA + Service Worker）。</li>
+    <li><b>兼容性：</b>现代浏览器（Chrome/Edge/Safari），移动端为主。</li>
+  </ul>
+</section>
+
+<!-- 七、技术方案 -->
+<section>
+  <h2>七、技术方案建议</h2>
+  <h3>1. NLU 引擎选型（核心决策）</h3>
+  <table>
+    <thead><tr><th>方案</th><th>准确率</th><th>成本</th><th>离线</th><th>隐私</th><th>适合</th></tr></thead>
+    <tbody>
+      <tr><td><b>规则+词典</b><br>（自研/chrono 类库）</td><td>常见口语 ~90%</td><td>零</td><td>✅</td><td>✅</td><td>MVP、确定性强场景</td></tr>
+      <tr><td><b>LLM 解析</b></td><td>长尾/复杂高</td><td>每次几分到1毛</td><td>❌</td><td>⚠️ 文本出网</td><td>兜底、模糊表达</td></tr>
+      <tr><td><b>混合（推荐）</b></td><td>兼顾</td><td>极低（缓存命中）</td><td>规则部分✅</td><td>规则优先</td><td>生产可用</td></tr>
+    </tbody>
+  </table>
+  <div class="note"><b>推荐：混合架构。</b>规则引擎覆盖 80% 常见口语（零成本、离线、隐私好）；当规则置信度低或命中长尾时，再调用 LLM 兜底。LLM 仅传时间相关文本，并可对相同解析做缓存以压低成本。</div>
+
+  <h3>2. 触发机制（解决「页面关了还能响」）</h3>
+  <ul>
+    <li><b>双层架构（已落地）：</b>① <b>本地兜底</b>——页面存活内由前端 1 秒轮询调度，触发 <code>Notification</code> + Web Audio 铃声 + 应用内响铃弹窗；② <b>云端推送</b>——开启「云端推送」后，闹钟同步到最小 Node 服务端（<code>server.js</code>），由服务端按时间通过 <b>Web Push</b> 下发，<b>浏览器/标签页完全关闭也能响</b>。</li>
+    <li><b>Service Worker：</b>负责 PWA 安装、离线缓存，并接收 <code>push</code> 事件弹系统通知；前台已聚焦时跳过系统通知，避免与本地弹窗重复。</li>
+    <li><b>Web Push 实现：</b>使用 VAPID 自签名密钥（首次启动自动生成 <code>data/vapid.json</code>），依赖 <code>web-push</code> 库；客户端订阅经 <code>/api/register</code> 上报，闹钟经 <code>/api/alarm</code> 登记，服务端每秒调度发送。</li>
+    <li><b>已验证：</b>调度→Web Push 发送→异常处理链路已在本地跑通（含过期/错过保护：宕机超 2 分钟视为错过不再补发）。</li>
+    <li><b>运行要求：</b>Web Push 与 SW 需 <code>localhost</code> 或 HTTPS；本地用 <code>node server.js</code> 托管本页即可体验。</li>
+  </ul>
+  <h3>3. 存储与框架</h3>
+  <ul>
+    <li>存储：<code>IndexedDB</code>（闹钟列表） + <code>localStorage</code>（设置/权限）。</li>
+    <li>框架：原生 JS / 轻量 React；原型阶段建议原生单文件，快速验证。</li>
+    <li>样式：移动优先，卡片式列表。</li>
+  </ul>
+</section>
+
+<!-- 八、数据模型 -->
+<section>
+  <h2>八、数据模型（本地）</h2>
+<pre>Alarm {
+  id: string            // uuid
+  raw: string           // 原始口语
+  datetime: string      // ISO 8601 + 时区（单次）
+  time: string          // "08:00"
+  recurrence: string    // none|daily|weekdays|weekend|weekly:N|every:N|biweekly:N
+  lead_minutes: number  // 提前提醒分钟数（0=不提前）
+  label: string
+  enabled: boolean
+  createdAt: string
+  nextTrigger: string   // 计算得出，便于排序
+}</pre>
+</section>
+
+<!-- 九、交互流程 -->
+<section>
+  <h2>九、交互流程（MVP）</h2>
+  <ol>
+    <li>用户在输入框说一句话 → 点击「设置」。</li>
+    <li>前端调用 NLU 引擎，得到 JSON。</li>
+    <li>若 <code>needs_clarification</code>：展示澄清问题（如「早上还是晚上？」）并等待补充。</li>
+    <li>否则展示「解析卡片」预览（时间 + 标签 + 重复），用户确认。</li>
+    <li>确认后写入存储，加入提醒调度；列表展示「下次响铃：…」。</li>
+    <li>到点：通知 + 铃声；用户可「再睡一会（延时）」或「关闭」。</li>
+  </ol>
+</section>
+
+<!-- 十、风险 -->
+<section>
+  <h2>十、关键风险与权衡（评估核心）</h2>
+  <div class="risk"><div class="sev l">低</div><div class="body"><b>Web 闹钟可靠性（已缓解）。</b>原风险：页面/浏览器关闭后纯前端无法触发。现通过「<b>Web Push + 最小服务端</b>」解决——浏览器关闭时由服务端推送提醒；页面存活内由本地调度兜底。<br><b>残留限制：</b>服务端进程需保持运行；公网部署需 HTTPS；移动端浏览器极端情况下仍可能限制后台推送（行业共性），必要时再上原生壳。</div></div>
+  <div class="risk"><div class="sev m">中</div><div class="body"><b>NLU 长尾准确率。</b>规则覆盖常见口语，但「大概八点左右」「吃完饭叫我」等难覆盖。<br><b>缓解：</b>混合架构 + 澄清交互；用原型积累语料。</div></div>
+  <div class="risk"><div class="sev m">中</div><div class="body"><b>通知权限。</b>用户拒绝授权则完全无法提醒。<br><b>缓解：</b>首次引导授权，拒绝时降级为「应用内提示 + 声音」。</div></div>
+  <div class="risk"><div class="sev l">低</div><div class="body"><b>时区/夏令时。</b>中国大陆无夏令时，影响小；跨时区差旅场景需显式处理。<br><b>缓解：</b>存储时区，默认 Asia/Shanghai。</div></div>
+  <div class="risk"><div class="sev l">低</div><div class="body"><b>重复语义边界。</b>「工作日」= 周一至周五、「周末」= 周六日，需明确。<br><b>缓解：</b>枚举化，文档约定。</div></div>
+</section>
+
+<!-- 十一、工作量 -->
+<section>
+  <h2>十一、工作量与排期评估</h2>
+  <table>
+    <thead><tr><th>模块</th><th>工时（人日）</th><th>优先级</th></tr></thead>
+    <tbody>
+      <tr><td>需求与设计</td><td>0.5</td><td>-</td></tr>
+      <tr><td>NLU 规则引擎（核心）</td><td>2.0</td><td>P0</td></tr>
+      <tr><td>数据模型 + 本地存储</td><td>0.5</td><td>P0</td></tr>
+      <tr><td>闹钟列表/增删改查 UI</td><td>1.5</td><td>P0</td></tr>
+      <tr><td>触发引擎（PWA+SW+通知+铃声）</td><td>2.0</td><td>P0（风险最高）</td></tr>
+      <tr><td>重复规则</td><td>1.0</td><td>P1</td></tr>
+      <tr><td>LLM 兜底接入</td><td>1.5</td><td>P1</td></tr>
+      <tr><td>测试与打磨</td><td>1.5</td><td>-</td></tr>
+    </tbody>
+  </table>
+  <div class="kpi">
+    <div class="box"><div class="n">≈ 8 人日</div><div class="l">MVP 合计（单人 1.5–2 周）</div></div>
+    <div class="box"><div class="n">≈ 12 人日</div><div class="l">含 P1（重复+LLM 兜底）</div></div>
+    <div class="box"><div class="n">3 人日</div><div class="l">多端同步/原生壳（P2，需服务端）</div></div>
+  </div>
+</section>
+
+<!-- 十二、结论 -->
+<section>
+  <h2>十二、结论与建议</h2>
+  <div class="rec">
+    <p><span class="go">建议：Go（可行）</span> 技术风险可控，核心价值清晰，且与「无服务端、低成本」定位契合。</p>
+    <p><b>分步推进：</b></p>
+    <ul>
+      <li><b>第一步：</b>NLU 规则引擎 + JSON 输出（已完成，含 <code>timestamp</code>，附交互原型）。</li>
+      <li><b>第二步（MVP）：</b>闹钟列表/存储/PWA 触发（已完成）；<b>可靠性 P0 已通过 Web Push + 最小服务端落地</b>——浏览器关闭也能响。</li>
+      <li><b>第三步（增强，已完成）：</b>LLM 兜底解析长尾口语（<code>/api/parse</code>）+ 多轮澄清对话（Agent 感）+ 公网 HTTPS 部署脚手架（<code>deploy/</code>）。</li>
+      <li><b>第四步（开放 API，已完成 Phase 1）：</b>对外暴露 <code>/v1/parse</code>（NL→JSON）+ <code>/v1/health</code>，API Key 鉴权 + 限流 + CORS + 标准错误，附 <code>openapi.yaml</code> 契约与集成测试。</li>
+      <li><b>当前状态：</b>核心闭环 + 开放解析能力均已可用；下一步建议做文档基线对齐与 HTTPS 真机验证（确认"关浏览器也响"在真机成立），再决定单用户体验打磨 or 平台化深化。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 十三、下一步改进路线图（评估版） -->
+<section>
+  <h2>十三、下一步改进路线图（评估版）</h2>
+  <p class="lead">当前 MVP 已完成核心闭环（口语解析 → JSON → 本地/服务端推送提醒）。以下按「价值密度」排序给出改进项，附成本、风险与推荐度，供决策。所有项均可在现有架构上增量叠加，无需重构。</p>
+
+  <h3>13.1 改进项优先级矩阵</h3>
+  <table>
+    <thead><tr><th>编号</th><th>改进项</th><th>价值</th><th>成本(人日)</th><th>风险</th><th>推荐度</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><b>LLM 长尾兜底解析</b><br>混合架构：规则覆盖 ~80% 常见口语，模糊/长尾转 LLM；预留 key 位、结果缓存降成本</td><td>高（口语覆盖 80%→95%+）</td><td>1.5</td><td>中（延迟/成本/准确率）</td><td><span class="pill done">已完成</span></td></tr>
+      <tr><td>2</td><td><b>公网 HTTPS 部署 + 一键脚本</b><br>让「关浏览器也响」在真机可用；含 VAPID/域名/证书/进程守护</td><td>高（生产可用性）</td><td>1.0</td><td>低</td><td><span class="pill done">已完成</span></td></tr>
+      <tr><td>3</td><td><b>解析语料回归测试集</b><br>把口语样例固化为自动化测试，每次改动防回归</td><td>中（质量基石）</td><td>0.5</td><td>低</td><td><span class="pill done">已完成</span></td></tr>
+      <tr><td>4</td><td><b>多轮澄清对话（Agent 感）</b><br>未识别时间时反问补全（「早上还是晚上？」），而非简单报错</td><td>中高（体验）</td><td>1.0</td><td>低</td><td><span class="pill done">已完成</span></td></tr>
+      <tr><td>5</td><td><b>提醒体验增强</b><br>贪睡时长自定义、铃声/音量选择、振动、重复结束日期/次数、标签分类、延时提醒</td><td>中</td><td>1.5</td><td>低</td><td><span class="pill rec">中</span></td></tr>
+      <tr><td>6</td><td><b>原生壳（Capacitor/Tauri）</b><br>彻底解决移动端后台被杀漏响，比 Web Push 更可靠</td><td>高（可靠性终局）</td><td>2–3</td><td>中</td><td><span class="pill rec">按需</span></td></tr>
+      <tr><td>7</td><td><b>多端同步（账号体系）</b><br>跨设备闹钟；需服务端 + 账号，与「无服务端低成本」定位冲突</td><td>中</td><td>3+</td><td>中</td><td><span class="pill no">需决策</span></td></tr>
+      <tr><td>8</td><td><b>统计与洞察</b><br>起床率、贪睡次数、最佳起床时间</td><td>低中</td><td>1.0</td><td>低</td><td><span class="pill no">低</span></td></tr>
+      <tr><td>9</td><td><b>无障碍 / 深色模式 / 国际化</b></td><td>低</td><td>0.5</td><td>低</td><td><span class="pill no">低</span></td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.1.1 新增方向：开放 API（v1 已发布）</h3>
+  <div class="note"><b>原路线图未覆盖的新方向。</b>在「自用工具」之外，已把核心解析能力对外开放：</div>
+  <table>
+    <thead><tr><th>阶段</th><th>内容</th><th>状态</th><th>价值</th></tr></thead>
+    <tbody>
+      <tr><td>开放 API · Phase 1</td><td><code>POST /v1/parse</code>（NL→JSON）+ <code>GET /v1/health</code>；API Key 鉴权、按 key 限流、CORS、标准错误；<code>openapi.yaml</code> 契约 + <code>manage_keys.js</code> 密钥管理 + <code>test_openapi.js</code> 集成测试（14/14 通过）</td><td><span class="pill done">已完成</span></td><td>把规则引擎直接变现为可调用能力，零存储改动</td></tr>
+      <tr><td>开放 API · Phase 2</td><td>闹钟 CRUD + 多租户 DB（SQLite/Postgres），从"只解析"升级为"可托管闹钟"</td><td><span class="pill rec">计划</span></td><td>形成可对外服务的产品</td></tr>
+      <tr><td>开放 API · Phase 3</td><td>对外开放 Web Push 订阅与推送调度，第三方也能用"关浏览器也响"</td><td><span class="pill rec">计划</span></td><td>能力闭环对外开放</td></tr>
+      <tr><td>开放 API · Phase 4</td><td>限流/CORS 加固、可观测（metrics/日志）、错误规范完善</td><td><span class="pill rec">计划</span></td><td>生产级稳定性</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.2 三个关键决策点</h3>
+  <div class="risk"><div class="sev h">决策</div><div class="body"><b>① 定位冲突：</b>当前「无服务端、低成本」是核心卖点；多端同步（项 7）需引入账号与服务端，会打破该定位。建议：除非明确要做平台，否则暂缓。</div></div>
+  <div class="risk"><div class="sev m">决策</div><div class="body"><b>② 可靠性终局：</b>Web Push 已覆盖绝大多数桌面/锁屏场景；若移动端有「必响」强刚需，原生壳（项 6）是更稳解法，但成本更高。</div></div>
+  <div class="risk"><div class="sev m">决策</div><div class="body"><b>③ LLM 成本边界：</b>混合架构把 LLM 调用压到长尾（&lt;20%），人均成本可控；若全部走 LLM，成本与延迟都会显著上升。</div></div>
+
+  <div class="risk"><div class="sev h">决策</div><div class="body"><b>④ 定位再校准：</b>原文档强调"无服务端、低成本"，但开放 API 已引入服务端 + 密钥体系（Phase 1 仅解析、无存储；若推进 Phase 2 则需 DB/账号）。这实际在把项目从「自用闹钟工具」悄悄推向「定时能力开放平台」。建议先明确主形态，再决定 Phase 2 与项 7（多端同步）是否启动。</div></div>
+
+  <h3>13.3 推荐落地顺序</h3>
+  <div class="rec">
+    <p><b>已落地（本次对齐基线）：</b></p>
+    <ul>
+      <li><b>Phase A 三件套：</b>③ 解析语料回归测试集（56 例）、① LLM 长尾兜底（<code>/api/parse</code>，规则≥0.85 优先）、② 公网 HTTPS 部署脚手架（Caddy + Docker，<code>deploy/</code>）—— 三项均已完成；</li>
+      <li><b>Phase B-1：</b>④ 多轮澄清对话（澄清卡片 + 合并解析）；</li>
+      <li><b>开放 API Phase 1：</b><code>/v1/parse</code> + 鉴权 + 限流 + 契约 + 测试。</li>
+    </ul>
+    <p><b>下一步候选（待决策，见决策④）：</b></p>
+    <ul>
+      <li><b>对齐文档 + 真机验证</b>（当前进行）：先把本文档回到真实基线，再用 <code>deploy/</code> 做 HTTPS 真机验证 Web Push；</li>
+      <li><b>⑤ 提醒体验增强</b>：贪睡自定义 / 铃声音量 / 标签分类（纯前端，~1.5 人日）；</li>
+      <li><b>开放 API Phase 2</b>：闹钟 CRUD + 多租户 DB（~2–3 人日）；</li>
+      <li><b>⑥ 原生壳</b>（强可靠刚需）/ <b>⑦ 多端同步</b>（明确做平台时）。</li>
+    </ul>
+  </div>
+  <div class="note"><b>结论（已对齐）：</b>原路线图推荐的「LLM 兜底 + 公网部署 + 测试集」三件套与「多轮澄清」均已完成；真正的新增量是<b>开放 API（v1 已发布）</b>。下一步建议先完成文档基线对齐与 HTTPS 真机验证，再在「单用户体验打磨（项5）」与「平台化（开放 API Phase 2/3）」之间依主形态决策。</div>
+</section>
+
+<div class="foot">附：源码同目录 —— <code>index.html</code>（应用）｜<code>nlu.js</code>（解析引擎）｜<code>server.js</code>（推送+开放API服务端）｜<code>sw.js</code>（Service Worker）｜<code>openapi.yaml</code> / <code>api_open_design.html</code>（开放API契约与文档）｜<code>manage_keys.js</code>（密钥管理）｜<code>test_openapi.js</code>（集成测试）｜<code>tests/</code>（解析回归56例）｜<code>deploy/</code>（HTTPS 部署脚手架）。运行：<code>node server.js</code> 后访问 <code>http://localhost:8080</code>，点「开启云端推送」体验关浏览器也能响。</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>闹钟 Agent · iOS App 落地实现方案</title>
+<style>
+  :root{
+    --bg:#fff; --bg2:#f6f8fb; --bg3:#eef2f7; --ink:#1c2230; --sub:#5b6678; --line:#d8dee8;
+    --blue:#185FA5; --teal:#0F6E56; --purple:#534AB7; --amber:#854F0B; --red:#A32D2D; --green:#3B6D11;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg);line-height:1.7;font-size:14px}
+  .wrap{max-width:980px;margin:0 auto;padding:32px 24px 64px}
+  h1{font-size:24px;margin:0 0 6px}
+  h2{font-size:19px;margin:34px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--bg3)}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--blue)}
+  p{margin:8px 0}
+  .lead{color:var(--sub);font-size:15px;margin-top:4px}
+  .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;vertical-align:middle}
+  .ok{background:#EAF3DE;color:var(--green)} .warn{background:#FAEEDA;color:var(--amber)} .bad{background:#FCEBEB;color:var(--red)} .rec{background:#E6F1FB;color:var(--blue)} .info{background:#EEEDFE;color:var(--purple)}
+  code{background:var(--bg3);padding:1px 6px;border-radius:5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  pre{background:#0f1420;color:#e6edf3;padding:14px 16px;border-radius:10px;overflow:auto;font-size:12.5px;line-height:1.55}
+  pre .c{color:#8b98a9}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--bg2);font-weight:600}
+  tr:nth-child(even) td{background:var(--bg2)}
+  .box{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:12px 0;background:var(--bg2)}
+  .box.amber{border-color:#efc775;background:#fdf6e6}
+  .box.red{border-color:#f7c1c1;background:#fdeded}
+  .box.blue{border-color:#b5d4f4;background:#eef6fe}
+  .steps{counter-reset:s;padding:0;list-style:none}
+  .steps li{position:relative;padding:8px 0 8px 38px;border-bottom:1px dashed var(--line)}
+  .steps li:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:8px;width:24px;height:24px;background:var(--blue);color:#fff;border-radius:50%;text-align:center;line-height:24px;font-size:12px;font-weight:600}
+  .kvs{display:grid;grid-template-columns:160px 1fr;gap:6px 14px;font-size:13px}
+  .kvs b{color:var(--sub);font-weight:600}
+  .arch{display:flex;flex-direction:column;gap:8px;margin:14px 0}
+  .arch .row{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}
+  .arch .cell{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff;flex:1;min-width:150px}
+  .arch .cell h4{margin:0 0 4px;font-size:13px}
+  .arch .cell p{margin:0;font-size:12px;color:var(--sub)}
+  .arch .layer{font-size:11px;letter-spacing:.5px;color:var(--sub);text-transform:uppercase;margin:4px 0 -2px 2px}
+  .foot{margin-top:40px;color:var(--sub);font-size:12px;border-top:1px solid var(--line);padding-top:14px}
+  .tag{font-size:12px;color:var(--sub)}
+  ul.tight li{margin:4px 0}
+  .nowrap{white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>闹钟 Agent · iOS App 落地实现方案</h1>
+  <div class="lead">把现有 Web 闹钟升级为可在 App Store 上架、且「关 App 也响」的 iOS 应用。本文基于已核实的 iOS 平台约束给出分阶段、可执行的实现路径。</div>
+  <p>
+    <span class="pill rec">版本 v1.0（落地稿）</span>
+    <span class="tag">　适配现状：nlu.js 解析引擎 / index.html UI / server.js 推送服务端</span>
+  </p>
+
+  <div class="box blue">
+    <b>核心结论（先看这里）</b>
+    <p style="margin:6px 0 0">iOS 上的「网页闹钟」和「App 闹钟」是两套完全不同的通知机制。现有 <code>server.js</code> 的 Web Push（VAPID + web-push）在 iOS 原生壳里<b>完全无效</b>——Apple 规定 WKWebView 不提供 Service Worker / Push API，Web Push 仅在「添加到主屏幕的 PWA」里可用（iOS 16.4+）。因此 iOS App 必须改用：<b>本地通知（主力，关 App 能响、无需服务器）</b> + 可选 <b>AlarmKit（iOS 26+，绕过静音的系统级闹钟）</b> + 可选 <b>APNs（云端同步/远程触发）</b>。推荐技术栈：<b>Capacitor 原生壳</b>封装现有 Web 资产，解析引擎零改动原样跑在 WebView 内。</p>
+  </div>
+
+  <h2>一、iOS 平台硬约束（已核实，方案不可绕开）</h2>
+  <table>
+    <tr><th>约束</th><th>事实</th><th>对闹钟 App 的影响</th></tr>
+    <tr>
+      <td><b>WKWebView 无 Web Push</b></td>
+      <td>Capacitor/Cordova 封装的 App 用 WKWebView，<b>不提供 Service Worker / Push API</b>。iOS 16.4+ 的 Web Push 只在使用 Safari「添加到主屏幕」的 PWA 中生效，App Store 壳内无效。</td>
+      <td><span class="pill bad">致命</span> 现有 <code>server.js</code> 的 Web Push 在 App 内不能用，必须换本地通知 / APNs。</td>
+    </tr>
+    <tr>
+      <td><b>本地通知 64 限额</b></td>
+      <td><code>UNUserNotificationCenter</code> 每 App 仅保留<b>未来最近的 64 个</b> pending 本地通知，超出<b>静默丢弃</b>、无错误回调；重复通知计 1 个。</td>
+      <td><span class="pill warn">重要</span> 必须做「滑动窗口」：只排未来最近的 N 个，App 每次回到前台重排。</td>
+    </tr>
+    <tr>
+      <td><b>静音模式不响</b></td>
+      <td>普通本地通知在 iOS 静音/专注模式下<b>默认不发声</b>。要做到「静音也响」需 <b>Critical Alert</b> 授权（Apple 特殊 entitlement，审核严格）或 <b>AlarmKit</b>（iOS 26+，委托系统时钟 App）。</td>
+      <td><span class="pill warn">体验天花板</span> 这是 iOS 闹钟最大痛点，方案必须正面应对（见第三节）。</td>
+    </tr>
+    <tr>
+      <td><b>自定义铃声限制</b></td>
+      <td>本地通知自定义声音文件须 ≤30s、<code>aiff/wav/caf</code> 格式、放在 App bundle 顶层（不能子目录），否则静默回退默认音。</td>
+      <td><span class="pill rec">注意</span> 丰富铃声需预置并打包，不能运行时动态下载后即时播放。</td>
+    </tr>
+    <tr>
+      <td><b>iOS 版本碎片化</b></td>
+      <td>AlarmKit 仅 <b>iOS 26+</b>（2025-09 发布）。大量设备仍跑老系统，需优雅降级到本地通知。</td>
+      <td><span class="pill rec">注意</span> 强提醒功能要做版本探测与降级。</td>
+    </tr>
+  </table>
+
+  <h2>二、技术选型对比</h2>
+  <table>
+    <tr><th>路线</th><th>做法</th><th>闹钟可靠性</th><th>工作量</th><th>结论</th></tr>
+    <tr>
+      <td><b>纯 PWA</b><br>（不进 App Store）</td>
+      <td>现有 <code>index.html</code> + Safari「添加到主屏幕」。已支持 iOS 16.4+ Web Push。</td>
+      <td><span class="pill ok">可用</span> 但 Web Push 需用户手动「添加到主屏幕」、且仍受静音限制。</td>
+      <td>极小</td>
+      <td>不是「App」，不满足上架诉求，仅作过渡。</td>
+    </tr>
+    <tr>
+      <td><b>Capacitor 原生壳</b><br>（推荐）</td>
+      <td>用 Capacitor 把 Web 资产包成真正的 iOS App；通知走本地通知 / AlarmKit / APNs。</td>
+      <td><span class="pill ok">可靠</span> 本地通知关 App 能响；AlarmKit 可绕过静音。</td>
+      <td>中（1.5–2.5 周）</td>
+      <td><span class="pill rec">推荐</span> 复用 90% 现有代码，可上架。</td>
+    </tr>
+    <tr>
+      <td><b>原生 Swift 重写</b></td>
+      <td>全部用 SwiftUI + 原生 UI 重写，解析引擎用 JS Core 或直接重写成 Swift。</td>
+      <td><span class="pill ok">最可靠</span> 完全掌控通知/铃声/UI。</td>
+      <td>大（4–6 周+）</td>
+      <td>过度投入，除非要做极致体验或上架被拒。</td>
+    </tr>
+  </table>
+
+  <h2>三、推荐架构（分层通知，按可靠性递进）</h2>
+  <div class="arch">
+    <div class="layer">用户界面层（WebView，复用现有代码，几乎零改动）</div>
+    <div class="row">
+      <div class="cell"><h4>index.html（解析 UI / 列表 / 澄清）</h4><p>原样作为 Capacitor Web 资产；运行时检测 Capacitor 环境，隐藏「云端推送」卡片，改用本地通知。</p></div>
+      <div class="cell"><h4>nlu.js（解析引擎）</h4><p>纯 JS，原样在 WebView 内运行，闹钟时间本地计算，<b>无需联网</b>。</p></div>
+    </div>
+    <div class="layer">通知策略层（原生桥接，关键改造点）</div>
+    <div class="row">
+      <div class="cell" style="border-color:#0F6E56"><h4>① 本地通知（主力）</h4><p><code>@capacitor/local-notifications</code>。关 App 能响、无需服务器。受 64 限额 + 静音限制。</p></div>
+      <div class="cell" style="border-color:#854F0B"><h4>② AlarmKit（iOS 26+ 增强）</h4><p><code>@capgo/capacitor-alarm</code>。把「强提醒」闹钟委托系统时钟 App，<b>绕过静音</b>。需版本探测降级。</p></div>
+      <div class="cell" style="border-color:#185FA5"><h4>③ APNs（可选·云端）</h4><p>复用 <code>server.js</code> 调度逻辑，将 web-push 替换为 <code>apn</code> 库（或 FCM 转发），支持跨设备/远程触发。</p></div>
+    </div>
+    <div class="layer">原生底座</div>
+    <div class="row">
+      <div class="cell"><h4>Capacitor iOS 工程</h4><p>Swift 原生壳 + WKWebView；桥接插件连接 Web 层与通知策略层；64 限额滑动窗口管理在原生侧做最稳。</p></div>
+    </div>
+  </div>
+
+  <div class="box amber">
+    <b>静音问题怎么破（必须决策）</b>
+    <ul class="tight" style="margin:6px 0 0">
+      <li><b>方案甲（推荐起步）</b>：只做本地通知 + 明确告知用户「静音时可能不会响」，引导用户在系统里为该 App 开启「重要警报」或关闭静音。实现最快，覆盖绝大多数场景。</li>
+      <li><b>方案乙（强提醒）</b>：iOS 26+ 用 AlarmKit 把闹钟委托给系统时钟 App（绕过静音、最可靠），老版本降级本地通知。需处理 AlarmKit 的「跳转到系统时钟」交互。</li>
+      <li><b>方案丙（Critical Alert）</b>：向 Apple 申请 Critical Alert entitlement，普通通知也能静音响。审核严格、通过率低，且需在隐私政策中说明。仅在对可靠性有硬要求时走。</li>
+    </ul>
+  </div>
+
+  <h2>四、分阶段实现计划</h2>
+
+  <h3>Phase 0 · 决策与脚手架（0.5 周）</h3>
+  <ul class="steps">
+    <li><b>定通知策略</b>：在甲/乙/丙 中选（建议甲起步，预留乙接口）。决定要不要做云端同步（影响是否引入 APNs）。</li>
+    <li><b>环境准备</b>：Mac + Xcode（免费即可跑真机调试；上架需 $99/年 开发者账号）。Node 22 已就绪。</li>
+    <li><b>初始化 Capacitor</b>：
+      <pre><span class="c"># 在 alarm_agent 目录内</span>
+npm install -D @capacitor/cli
+npm install @capacitor/core @capacitor/ios
+npx cap init alarm-agent com.yourorg.alarmagent --web-dir .
+npm install @capacitor/local-notifications
+<span class="c"># iOS 26+ 强提醒（可选）</span>
+npm install @capgo/capacitor-alarm
+npx cap add ios
+npx cap sync</pre>
+    </li>
+  </ul>
+
+  <h3>Phase 1 · 封装与通知桥接（1–1.5 周）</h3>
+  <ul class="steps">
+    <li><b>Web 资产就位</b>：把 <code>index.html</code> 及内联引擎放进 Capacitor <code>web-dir</code>（即项目根）。确保无外部 <code>src</code> 依赖、无 file:// 假设。</li>
+    <li><b>环境探测与 UI 适配</b>：在 <code>index.html</code> 应用脚本里加 <code>if (window.Capacitor) { /* 隐藏云端推送卡片，改走本地通知 */ }</code>；保存闹钟时调用本地通知桥接而非 Web Audio/Notification。</li>
+    <li><b>通知桥接（关键）</b>：把 <code>computeNextTrigger(a)</code> 的结果转成 <code>LocalNotifications.schedule()</code>。示例：
+      <pre>import { LocalNotifications } from '@capacitor/local-notifications';
+
+async function scheduleAlarm(a) {
+  // a = 解析结果 {timestamp(秒), label, recurrence, ...}
+  const fire = new Date(a.timestamp * 1000);
+  await LocalNotifications.schedule({
+    notifications: [{
+      id: hashId(a),                         <span class="c">// 稳定 id，便于取消/重排</span>
+      title: '闹钟',
+      body: a.label || '提醒时间到了',
+      schedule: { at: fire, allowWhileIdle: true },  <span class="c">// 重复类用 repeats/on</span>
+      sound: 'alarm.wav',                    <span class="c">// ≤30s，放 bundle 顶层</span>
+      extra: { recurrence: a.recurrence }
+    }]
+  });
+}
+<span class="c">// 取消：LocalNotifications.cancel({ notifications:[{id}] })</span></pre>
+    </li>
+    <li><b>64 限额滑动窗口（必须）</b>：只在原生侧（最稳）或 Web 侧保留未来最近 ≤60 个到期闹钟的 pending 通知；App 每次 <code>appDidBecomeActive</code> / Web 的 <code>visibilitychange</code> 触发重排：
+      <pre><span class="c">// 思路：取所有启用闹钟，按下次触发时间升序，只 schedule 前 60 个，</span>
+<span class="c">// 其余标记为「窗口外」，下次重排时再补。重复闹钟计 1 个，不占额度。</span>
+async function rescheduleWindow() {
+  const all = getEnabledAlarms().sort((a,b)=>nextAt(a)-nextAt(b));
+  const keep = all.slice(0, 60);
+  const pending = await LocalNotifications.getPending();
+  const keepIds = new Set(keep.map(hashId));
+  const drop = pending.filter(p => !keepIds.has(p.id));
+  await LocalNotifications.cancel({ notifications: drop.map(id => ({id})) });
+  for (const a of keep) await scheduleAlarm(a);
+}</pre>
+    </li>
+    <li><b>本地持久化</b>：现有 <code>localStorage</code> 在 Capacitor 内仍可用（WKWebView 配额），闹钟数据与「已排程」状态本地保存即可。</li>
+    <li><b>铃声与交互</b>：预置 1–2 个 ≤30s 的 <code>wav/caf</code> 音效放 iOS bundle 顶层；用 <code>registerActionTypes</code> 注册「贪睡 / 完成」按钮（<code>localNotificationActionPerformed</code> 监听）。</li>
+  </ul>
+
+  <h3>Phase 2 · 真机调试与上架（1 周）</h3>
+  <ul class="steps">
+    <li><b>真机跑通</b>：<code>npx cap open ios</code> → Xcode → 连 iPhone → 签名（个人账号可真机调试）→ 验证：关 App 后到点收到本地通知、贪睡/完成按钮可用、64 限额重排正确。</li>
+    <li><b>上架物料</b>：App ID、发行证书、Provisioning Profile；App 图标（含 <code>apple-touch-icon</code>）、隐私政策 URL、权限说明文案（通知用途）。</li>
+    <li><b>TestFlight 内测</b>：邀请少量用户验证不同 iOS 版本（重点看 iOS 26 AlarmKit 与老版本降级）。</li>
+    <li><b>App Store 审核</b>：闹钟类 App 需清晰说明通知用途；若用 Critical Alert 须在审核备注说明必要性。</li>
+  </ul>
+
+  <h3>Phase 3 · 增强（可选，按需）</h3>
+  <ul class="steps">
+    <li><b>AlarmKit 强提醒</b>：iOS 26+ 用 <code>@capgo/capacitor-alarm</code> 的 <code>createAlarm</code> 把「强提醒」类闹钟委托系统时钟 App，提供「静音也响」；版本探测，老系统降级本地通知。</li>
+    <li><b>云端同步 + APNs</b>：若做跨设备，<code>server.js</code> 保留调度逻辑，将 <code>web-push</code> 替换为 <code>apn</code> 库（需 APNs 认证密钥 .p8）；复用现有 <code>computeNext</code>。手机端 <code>register</code> 上报 device token。</li>
+    <li><b>Widget / 实时活动</b>：主屏幕 Widget 显示下次闹钟；实时活动显示倒计时（iOS 16+）。</li>
+  </ul>
+
+  <h2>五、现有代码复用映射</h2>
+  <table>
+    <tr><th>现有文件</th><th>在 iOS App 中的命运</th><th>改动量</th></tr>
+    <tr><td><code>nlu.js</code></td><td>原样在 WebView 运行，解析逻辑<b>零改动</b>；<code>parseAlarm(text)</code> 继续作为入口。</td><td>极小（仅确认无 Node 专属 API 泄漏）</td></tr>
+    <tr><td><code>index.html</code></td><td>作为 Capacitor Web 资产；加 Capacitor 环境探测，把"云端推送"分支换成"本地通知"分支。</td><td>小（加探测 + 通知桥接调用）</td></tr>
+    <tr><td><code>server.js</code> 的 Web Push</td><td>App 内<b>弃用</b>；仅当 Phase 3 做云端同步时，把 <code>web-push</code> 换成 <code>apn</code>。</td><td>仅 Phase 3 需改</td></tr>
+    <tr><td><code>computeNextTrigger</code></td><td>复用其时间计算逻辑，输出喂给 <code>LocalNotifications.schedule</code> 的 <code>at</code> / <code>repeats</code>。</td><td>小（适配调度参数）</td></tr>
+    <tr><td><code>tests/</code> 回归集</td><td>继续保活，确保引擎改动不回退（56 例）。</td><td>不变</td></tr>
+    <tr><td><code>deploy/</code> 脚手架</td><td>Web 部署继续有效；iOS 走 Xcode/Capacitor，与该脚手架解耦。</td><td>不变</td></tr>
+  </table>
+
+  <h2>六、上架流程清单</h2>
+  <div class="kvs">
+    <b>开发者账号</b><div>Apple Developer Program，$99/年（真机调试免费，上架必须付费）。</div>
+    <b>证书/描述文件</b><div>App ID（含 Push 能力，若用 APNs）→ 发行证书 → Provisioning Profile（App Store）。</div>
+    <b>Xcode 工程</b><div><code>npx cap open ios</code> 生成；配置 Bundle ID、签名、部署目标（建议 iOS 15+，AlarmKit 仅 26+ 运行时探测）。</div>
+    <b>隐私</b><div>隐私政策 URL（App Store 强制）；通知权限用途描述文案。</div>
+    <b>图标</b><div>各尺寸 App 图标 + <code>apple-touch-icon</code>；现有 <code>icon.svg</code> 需转 PNG 集。</div>
+    <b>测试</b><div>TestFlight 内测；覆盖多 iOS 版本、关 App 收通知、64 限额、贪睡。</div>
+    <b>审核要点</b><div>闹钟类 App 说明通知必要性；避免"伪后台保活"描述；Critical Alert 需额外说明。</div>
+  </div>
+
+  <h2>七、风险与缓解</h2>
+  <table>
+    <tr><th>风险</th><th>等级</th><th>缓解</th></tr>
+    <tr><td>静音模式不响</td><td><span class="pill bad">高</span></td><td>甲：引导用户开启重要警报；乙：iOS 26+ AlarmKit 绕过静音；丙：申请 Critical Alert（难）。建议甲起步 + 预留乙。</td></tr>
+    <tr><td>64 限额导致远期闹钟丢失</td><td><span class="pill warn">中</span></td><td>滑动窗口 + 每次回到前台重排；重复闹钟计 1 个不占额度；UI 提示「超过 60 个仅保证最近生效」。</td></tr>
+    <tr><td>WKWebView 无 Web Push</td><td><span class="pill bad">高</span></td><td>App 内不依赖 Web Push；改本地通知/APNs。Web 版（PWA）仍可保留 Web Push 作为独立形态。</td></tr>
+    <tr><td>自定义铃声受限</td><td><span class="pill rec">低</span></td><td>预置 ≤30s 音效打包进 bundle；不支持运行时动态音效。</td></tr>
+    <tr><td>iOS 版本碎片化</td><td><span class="pill rec">低</span></td><td>运行时探测 <code>getOSInfo().supportsNativeAlarms</code>；老版本降级本地通知。</td></tr>
+    <tr><td>审核被拒（通知/隐私）</td><td><span class="pill warn">中</span></td><td>清晰权限文案、隐私政策、TestFlight 充分自测后再提交。</td></tr>
+  </table>
+
+  <h2>八、工作量与排期估算</h2>
+  <table>
+    <tr><th>阶段</th><th>内容</th><th>估时</th><th>前置</th></tr>
+    <tr><td>Phase 0</td><td>决策 + Capacitor 脚手架</td><td>0.5 周</td><td>Mac/Xcode</td></tr>
+    <tr><td>Phase 1</td><td>封装 + 本地通知桥接 + 64 限额</td><td>1–1.5 周</td><td>Phase 0</td></tr>
+    <tr><td>Phase 2</td><td>真机调试 + 上架</td><td>1 周</td><td>Phase 1</td></tr>
+    <tr><td>Phase 3（可选）</td><td>AlarmKit / APNs / Widget</td><td>1–2 周</td><td>Phase 2</td></tr>
+  </table>
+  <p><b>最小可上架（Phase 0–2）：约 2.5–3 周</b>，前提是有一台 Mac 与测试用 iPhone。最大风险不在代码量，而在「静音不响」的体验天花板——务必在 Phase 0 定好甲/乙/丙。</p>
+
+  <h2>九、需要你拍板的决策点</h2>
+  <div class="box">
+    <ol class="tight" style="margin:0">
+      <li><b>通知策略</b>：选甲（本地通知 + 引导）/ 乙（AlarmKit 强提醒）/ 丙（Critical Alert）？建议甲起步、预留乙。</li>
+      <li><b>是否做云端同步</b>：只做单机版（Phase 1 即可，最简单），还是跨设备（需 Phase 3 APNs + server 改造）？</li>
+      <li><b>上架范围</b>：先上架中国区 App Store，还是全球？影响合规与隐私政策语言。</li>
+      <li><b>机器资源</b>：是否有 Mac + iPhone 真机？（无 Mac 无法出 iOS 包，这是硬门槛。）</li>
+    </ol>
+  </div>
+
+  <div class="foot">
+    附：本方案基于以下已核实事实 —— iOS WKWebView 不提供 Web Push（仅 Safari 添加的 PWA 在 iOS 16.4+ 支持）；UNUserNotificationCenter 64 pending 硬限制；普通本地通知静音不响、Critical Alert 需特殊授权；AlarmKit 仅 iOS 26+；Capacitor Local Notifications / @capgo/capacitor-alarm 可行。
+    源码同目录：<code>nlu.js</code>｜<code>index.html</code>｜<code>server.js</code>｜<code>tests/</code>。
+  </div>
+
+</div>
+</body>
+</html>

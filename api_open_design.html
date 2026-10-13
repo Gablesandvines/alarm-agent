@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>闹钟 Agent · 开放 API 设计文档（v1）</title>
+<style>
+  :root{--bg:#f5f7fb;--card:#fff;--ink:#1f2533;--sub:#5b6472;--brand:#3b6cf6;--line:#e6e9ef;--ok:#2f9e6e;--bad:#d9534f;--warn:#e0883b;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.7;font-size:15px}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 18px 80px}
+  h1{font-size:26px;margin:0 0 6px}
+  h2{font-size:19px;margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px;color:#2a3550}
+  p,li{color:var(--ink)}
+  .meta{color:var(--sub);font-size:13.5px;margin:0 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 3px rgba(20,30,60,.04)}
+  code{background:#eef2ff;color:#3446a0;padding:1px 6px;border-radius:6px;font-size:13px;font-family:Consolas,Menlo,monospace}
+  pre{background:#0f1729;color:#e6edf7;padding:15px 16px;border-radius:10px;overflow:auto;font-size:12.5px;line-height:1.55;font-family:Consolas,Menlo,monospace;margin:10px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f3f6fc;font-weight:600}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
+  .pill.get{background:#eafaf1;color:var(--ok)}
+  .pill.post{background:#eef2ff;color:#3446a0}
+  .pill.warn{background:#fff8ec;color:var(--warn)}
+  .pill.bad{background:#fdeaea;color:var(--bad)}
+  .box{background:#f8faff;border:1px solid #dbe7ff;border-left:4px solid var(--brand);border-radius:10px;padding:12px 16px;margin:14px 0}
+  .box.warn{background:#fff8ec;border-color:#ffe2b0;border-left-color:var(--warn)}
+  .note{color:var(--sub);font-size:13px}
+  a{color:var(--brand)}
+  .tag{display:inline-block;background:var(--brand);color:#fff;font-size:12px;padding:2px 10px;border-radius:999px;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⏰ 闹钟 Agent · 开放 API 设计文档</h1>
+  <p class="meta">版本 v1.0 · 状态：设计评审稿 · 范围：<b>仅解析接口</b> · 鉴权：<b>API Key</b></p>
+
+  <div class="card">
+    <h3 style="margin-top:4px">一句话定位</h3>
+    <p>把"一句话自然语言"变成"结构化闹钟时间 JSON"。规则引擎优先（高置信度零成本），仅长尾歧义走 LLM 兜底。v1 只开放 <code>POST /v1/parse</code> 与 <code>GET /v1/health</code>，<b>无状态、不碰存储</b>，是风险最低、价值最高的第一步。</p>
+  </div>
+
+  <h2>1. 范围与边界</h2>
+  <div class="card">
+    <p><span class="tag">v1 开放</span> <code>POST /v1/parse</code> — 自然语言 → 闹钟时间 JSON</p>
+    <p><span class="tag">v1 开放</span> <code>GET /v1/health</code> — 健康检查</p>
+    <p><span class="pill warn">暂不开</span> 闹钟 CRUD、Web Push 订阅、多租户持久化（见路线图 Phase 2/3）</p>
+    <p class="note">现有内部接口 <code>/api/vapid · /api/register · /api/alarm · /api/parse</code> 保留给本地 MVP 网页使用，与对外 <code>/v1/*</code> 互不干扰。</p>
+  </div>
+
+  <h2>2. 架构</h2>
+  <div class="card">
+    <pre>第三方应用 / SDK
+      │  Authorization: Bearer &lt;API_KEY&gt;
+      ▼
+┌─────────────────────────────────────────┐
+│  API 网关层（server.js 新增中间件）        │
+│   · API Key 校验 + 租户解析                 │
+│   · 限流（令牌桶，按 key 60/min）           │
+│   · 入参校验（text ≤200 字、JSON 体积）      │
+│   · 统一错误封装 + request_id               │
+└─────────────────────────────────────────┘
+      ▼
+┌─────────────────────────────────────────┐
+│  /v1/parse 处理器                          │
+│   parseAlarm(text, now?, tz?)  ← nlu.js   │
+│   ├─ 规则命中(conf≥0.85) → 直接返回 source=rule │
+│   └─ 否则(若配置 ALARM_LLM_KEY) → LLM 兜底   │
+└─────────────────────────────────────────┘
+      ▼
+   结构化 JSON 响应（含 alarm / clarification）</pre>
+    <p class="note">v1 全链路<b>无数据库</b>：解析是纯函数，鉴权只需要一份"有效 Key 清单"。</p>
+  </div>
+
+  <h2>3. 认证：API Key 模型</h2>
+  <div class="card">
+    <h3>3.1 调用方式</h3>
+    <p>所有 <code>/v1/*</code> 请求（<code>/v1/health</code> 除外）必须在请求头携带：</p>
+    <pre>Authorization: Bearer &lt;API_KEY&gt;</pre>
+    <h3>3.2 密钥发放（自托管方案）</h3>
+    <p>最小实现用一份 <code>keys.json</code>（或环境变量 <code>ALARM_API_KEYS</code>）保存密钥与配额：</p>
+    <pre>[
+  { "key": "ak_live_xxxx", "name": "演示应用", "active": true, "rate_limit": 60 },
+  { "key": "ak_test_yyyy", "name": "测试",     "active": true, "rate_limit": 20 }
+]</pre>
+    <p class="note">生产环境应改为 DB 存储 + 管理后台发放；密钥泄露可即时 <code>active:false</code> 吊销。</p>
+    <div class="box warn"><b>注意：</b>"开放"≠"匿名"。即便解析是无状态的，也需 Key 以便限流、配额、审计与滥用追踪。</div>
+  </div>
+
+  <h2>4. 端点规范：<code>POST /v1/parse</code></h2>
+  <div class="card">
+    <h3>4.1 请求体</h3>
+    <table>
+      <tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>
+      <tr><td><code>text</code></td><td>string</td><td>✅</td><td>自然语言输入，≤200 字</td></tr>
+      <tr><td><code>timezone</code></td><td>string</td><td>—</td><td>IANA 时区，默认 <code>Asia/Shanghai</code></td></tr>
+      <tr><td><code>now</code></td><td>string(ISO)</td><td>—</td><td>可选，覆盖"当前时间"用于确定性测试/回放</td></tr>
+    </table>
+    <h3>4.2 成功响应（200，注意 success 可能为 false）</h3>
+    <p>字段与现有引擎一致，并新增 <code>source</code> 与 <code>request_id</code>：</p>
+    <table>
+      <tr><th>字段</th><th>说明</th></tr>
+      <tr><td><code>success</code></td><td>是否解析出时间</td></tr>
+      <tr><td><code>raw</code></td><td>原始输入</td></tr>
+      <tr><td><code>source</code></td><td><code>rule</code>（规则）或 <code>llm</code>（兜底）</td></tr>
+      <tr><td><code>alarm</code></td><td>时间对象：timestamp(Unix秒) / datetime(ISO) / date / time / recurrence / timezone / lead_minutes / label / enabled</td></tr>
+      <tr><td><code>confidence</code></td><td>0~1 置信度</td></tr>
+      <tr><td><code>needs_clarification</code></td><td>true 时需追问</td></tr>
+      <tr><td><code>ambiguities</code></td><td>澄清提示数组</td></tr>
+      <tr><td><code>clarification</code></td><td>聚焦追问：type / question / suggestions（v1 引擎新增）</td></tr>
+      <tr><td><code>request_id</code></td><td>排障用唯一 ID</td></tr>
+    </table>
+    <div class="box"><b>设计要点：</b>接口"成功"（HTTP 200）≠ 解析成功。模糊输入（如"待会提醒我喝水"）返回 HTTP 200 + <code>success:false</code>，由调用方决定是否发起追问，或由客户端用 <code>clarification.suggestions</code> 引导用户。</div>
+  </div>
+
+  <h2>5. 错误码与限流</h2>
+  <div class="card">
+    <table>
+      <tr><th>HTTP</th><th>code</th><th>触发场景</th></tr>
+      <tr><td><span class="pill bad">400</span></td><td><code>bad_request</code></td><td>缺少 text / 超长 / JSON 非法</td></tr>
+      <tr><td><span class="pill bad">401</span></td><td><code>invalid_api_key</code></td><td>缺头或 Key 不存在</td></tr>
+      <tr><td><span class="pill bad">403</span></td><td><code>key_disabled</code></td><td>Key 被禁用</td></tr>
+      <tr><td><span class="pill warn">429</span></td><td><code>rate_limited</code></td><td>超过该 Key 的速率上限</td></tr>
+      <tr><td><span class="pill bad">500</span></td><td><code>internal</code></td><td>服务端异常</td></tr>
+    </table>
+    <p><b>限流：</b>令牌桶，默认每 Key <code>60 次/分钟</code>（可在 keys.json 按 Key 覆盖）。超限返回 429，建议客户端指数退避重试。</p>
+    <p><b>错误响应体：</b></p>
+    <pre>{ "error": { "code": "invalid_api_key", "message": "API Key 无效或已禁用" }, "request_id": "req_01HX..." }</pre>
+  </div>
+
+  <h2>6. 调用示例</h2>
+  <div class="card">
+    <h3>cURL</h3>
+    <pre>curl -X POST https://your-domain.example.com/v1/parse \
+  -H "Authorization: Bearer ak_live_xxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"明天早上8点叫我起床"}'</pre>
+    <h3>JavaScript（fetch）</h3>
+    <pre>const r = await fetch('/v1/parse', {
+  method: 'POST',
+  headers: { 'Authorization': 'Bearer ' + API_KEY, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ text: '30分钟后提醒我开会' })
+});
+const data = await r.json();
+if (data.success) console.log(data.alarm.timestamp);</pre>
+    <h3>Python（requests）</h3>
+    <pre>import requests
+resp = requests.post('https://your-domain.example.com/v1/parse',
+    headers={'Authorization': 'Bearer ak_live_xxxx'},
+    json={'text': '下周一9点半开会'})
+print(resp.json())</pre>
+  </div>
+
+  <h2>7. 版本与兼容性</h2>
+  <div class="card">
+    <ul>
+      <li>路径前缀 <code>/v1</code> 即版本号；破坏性变更升 <code>/v2</code>，旧版本至少保留 6 个月并公告。</li>
+      <li>响应字段新增为<b>向后兼容</b>；移除/改义字段走主版本升级。</li>
+      <li><code>success:false</code> + 澄清语义在 v1 已稳定，调用方应据此实现追问 UX。</li>
+    </ul>
+  </div>
+
+  <h2>8. 安全基线</h2>
+  <div class="card">
+    <ul>
+      <li><b>HTTPS only</b>：API Key 明文传输，必须 TLS；Caddy 自动证书已在脚手架中。</li>
+      <li><b>CORS</b>：仅对受信任域名开放（不 blanket <code>*</code>）。</li>
+      <li><b>输入限制</b>：<code>text</code> ≤200 字、请求体 ≤4KB，防滥用。</li>
+      <li><b>审计</b>：每个请求落 <code>request_id</code> + Key 名，便于追溯异常调用。</li>
+      <li><b>密钥管理</b>：支持即时吊销；生产环境密钥入库、禁止明文提交仓库。</li>
+    </ul>
+  </div>
+
+  <h2>9. 落地路线图</h2>
+  <div class="card">
+    <table>
+      <tr><th>阶段</th><th>内容</th><th>工时</th><th>依赖</th></tr>
+      <tr><td><b>Phase 1</b></td><td><code>/v1/parse</code> + API Key 鉴权 + 限流 + 本设计文档/OpenAPI</td><td>1–2 人日</td><td>无（复用 nlu.js）</td></tr>
+      <tr><td>Phase 2</td><td>闹钟 CRUD + 多租户 DB（SQLite/PG）+ 幂等</td><td>2–3 人日</td><td>DB</td></tr>
+      <tr><td>Phase 3</td><td>对外开放 Web Push（按租户/设备订阅 + 调度改造）</td><td>2 人日</td><td>Phase 2</td></tr>
+      <tr><td>Phase 4</td><td>限流/CORS/指标/错误规范加固与可观测</td><td>2 人日</td><td>Phase 1+</td></tr>
+    </table>
+    <div class="box"><b>本次交付：</b>设计文档（本页）+ <code>openapi.yaml</code>（OpenAPI 3 规范，可导入 Swagger UI / Postman）。业务代码待评审通过后进入 Phase 1 实现。</div>
+  </div>
+
+  <h2>10. 与现有内部接口的关系</h2>
+  <div class="card">
+    <p>对外 <code>/v1/parse</code> 与内部 <code>/api/parse</code> 共用同一套 <code>parseAlarm</code> 引擎，只是前者增加了<b>鉴权/限流/标准化错误/request_id</b>。实现时建议把内部 <code>/api/parse</code> 也改走统一中间件，避免两套鉴权逻辑。</p>
+    <p class="note">文档与规范可与 <code>alarm_requirements.html</code>（产品需求文档）互为补充：需求文档讲"产品形态"，本设计文档讲"对外集成契约"。</p>
+  </div>
+</div>
+</body>
+</html>

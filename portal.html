@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>闹钟 Agent · 开发者门户</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1c2230; --sub:#5b6678; --line:#e6e9ef;
+    --brand:#3b6cff; --ok:#1aa06d; --bad:#e5484d; --warn:#d9891f;
+    --pill:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.6}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 18px 60px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--sub);font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 18px;margin-bottom:18px;box-shadow:0 1px 2px rgba(20,30,60,.04)}
+  .card h2{font-size:16px;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+  .card h2 .n{width:22px;height:22px;border-radius:6px;background:var(--pill);color:var(--brand);font-size:12px;display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+  label{font-size:13px;color:var(--sub);display:block;margin:10px 0 5px}
+  input,select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:14px;background:#fff;color:var(--ink)}
+  input:focus,select:focus{outline:none;border-color:var(--brand)}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .row > *{flex:1;min-width:140px}
+  button{cursor:pointer;border:none;border-radius:9px;padding:9px 14px;font-size:14px;font-weight:600;background:var(--brand);color:#fff;transition:.15s}
+  button:hover{filter:brightness(1.05)}
+  button.sec{background:#eef2ff;color:var(--brand)}
+  button.ghost{background:transparent;color:var(--sub);border:1px solid var(--line)}
+  button.danger{background:#fff;color:var(--bad);border:1px solid #f3c6c8}
+  .btnrow{display:flex;gap:10px;margin-top:14px;align-items:center;flex-wrap:wrap}
+  .msg{font-size:13px;margin-top:10px;min-height:18px}
+  .msg.ok{color:var(--ok)} .msg.bad{color:var(--bad)} .msg.warn{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--sub);font-weight:600}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:var(--pill);color:var(--brand)}
+  .pill.g{background:#e7f7ef;color:var(--ok)} .pill.r{background:#fde8e9;color:var(--bad)}
+  .pill.y{background:#fdf2e2;color:var(--warn)}
+  .bar{height:8px;border-radius:6px;background:#eef1f6;overflow:hidden;margin-top:6px}
+  .bar > i{display:block;height:100%;background:var(--brand)}
+  .metric{margin:12px 0}
+  .metric .v{font-size:18px;font-weight:700}
+  .metric .k{font-size:12px;color:var(--sub)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .hide{display:none}
+  .kv{font-size:13px;color:var(--sub);margin:2px 0}
+  code{background:#eef1f6;padding:1px 5px;border-radius:5px;font-size:12px}
+  .link{color:var(--brand);text-decoration:none;font-size:13px}
+  .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+  .topbar .auth{display:flex;gap:8px;align-items:center;flex:1;min-width:240px}
+  .topbar .auth input{flex:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div>
+      <h1>⏰ 闹钟 Agent · 开发者门户</h1>
+      <div class="sub">自助管理 API 密钥 · 配置 Webhook · 查看用量与套餐</div>
+    </div>
+    <div class="auth">
+      <input id="apikey" placeholder="粘贴你的 API Key（sk_live_...）" />
+      <button class="sec" onclick="connect()">连接</button>
+    </div>
+  </div>
+
+  <div id="gate" class="card">
+    <h2><span class="n">·</span> 开始使用</h2>
+    <p class="kv">输入任意一枚有效 API Key 即可管理你的租户资源（密钥、Webhook、用量）。Key 仅保存在你本机浏览器 <code>localStorage</code>，不会上传。</p>
+    <p class="msg" id="gateMsg"></p>
+  </div>
+
+  <div id="dash" class="hide">
+    <!-- 用量看板 -->
+    <div class="card">
+      <h2><span class="n">1</span> 用量看板 & 套餐</h2>
+      <div id="usageBox"></div>
+    </div>
+
+    <!-- 密钥管理 -->
+    <div class="card">
+      <h2><span class="n">2</span> API 密钥</h2>
+      <table id="keysTable"><thead><tr><th>密钥</th><th>名称</th><th>套餐</th><th>限额/min</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+      <div style="margin-top:14px;border-top:1px dashed var(--line);padding-top:14px">
+        <div class="row">
+          <div><label>新建密钥名称</label><input id="newLabel" placeholder="例如：生产环境" /></div>
+          <div><label>套餐</label>
+            <select id="newPlan"><option value="free">免费版（60/min，5k/月）</option><option value="pro">专业版（600/min，100k/月）</option><option value="enterprise">企业版（6000/min，不限）</option></select>
+          </div>
+          <div><label>自定义限额/min（可选）</label><input id="newRate" type="number" placeholder="留空=套餐默认" /></div>
+        </div>
+        <div class="btnrow"><button onclick="createKey()">＋ 创建密钥</button><span class="msg" id="keyMsg"></span></div>
+      </div>
+    </div>
+
+    <!-- Webhook 配置 -->
+    <div class="card">
+      <h2><span class="n">3</span> Webhook 触发投递</h2>
+      <p class="kv">配置回调 URL 后，你的托管闹钟触发时会向该地址 POST <code>alarm.fired</code> 事件（带 HMAC 签名）。</p>
+      <div class="row">
+        <div style="flex:3"><label>回调 URL（需 https，本地 http://localhost 允许）</label><input id="whUrl" placeholder="https://your-app.example.com/alarm-callback" /></div>
+      </div>
+      <div class="btnrow">
+        <button class="sec" onclick="saveWebhook()">保存并校验</button>
+        <button class="ghost" onclick="clearWebhook()">清空</button>
+        <span class="msg" id="whMsg"></span>
+      </div>
+      <div id="whStatus" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <div class="kv">📘 <a class="link" href="api_reference.html" target="_blank">接口参考文档</a> · 🔧 健康检查 <code>/v1/health</code> · 返回上一页请直接访问根路径 <code>/</code></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let TOKEN = localStorage.getItem('aa_token') || '';
+if (TOKEN) $('apikey').value = TOKEN;
+
+async function api(method, path, body){
+  const opt = { method, headers: { 'Content-Type':'application/json', Authorization:'Bearer '+TOKEN } };
+  if (body) opt.body = JSON.stringify(body);
+  const r = await fetch(path, opt);
+  let j = null; try { j = await r.json(); } catch(e){}
+  return { status:r.status, j };
+}
+
+async function connect(){
+  TOKEN = $('apikey').value.trim();
+  if (!TOKEN) return setMsg('gateMsg','请输入 API Key','bad');
+  const { status, j } = await api('GET','/v1/usage');
+  if (status === 200){
+    localStorage.setItem('aa_token', TOKEN);
+    $('gate').classList.add('hide'); $('dash').classList.remove('hide');
+    await refreshAll();
+  } else {
+    setMsg('gateMsg', '连接失败：'+(j&&j.error?j.error.message:'无效或已禁用')+'（'+status+'）', 'bad');
+  }
+}
+function setMsg(id,t,cls){ const e=$(id); e.textContent=t; e.className='msg '+(cls||''); }
+
+async function refreshAll(){ await Promise.all([loadUsage(), loadKeys(), loadWebhook()]); }
+
+async function loadUsage(){
+  const { status, j } = await api('GET','/v1/usage');
+  if (status!==200) return;
+  const u=j.usage;
+  const quotaHtml = u.quota==null
+    ? '<span class="pill">不限量</span>'
+    : '<span class="pill '+(u.remaining<=0?'r':(u.remaining/u.quota<0.2?'y':'g'))+'">剩余 '+u.remaining+' / '+u.quota+'</span>';
+  const metrics = [
+    ['parse_count','解析次数'],['alarm_create','创建闹钟'],['alarm_update','更新闹钟'],
+    ['alarm_delete','删除闹钟'],['fire_count','触发次数']
+  ];
+  const max = Math.max(1, ...metrics.map(m=>u[m[0]]||0));
+  const bars = metrics.map(m=>{
+    const v=u[m[0]]||0; const pct=Math.round(v/max*100);
+    return `<div class="metric"><div class="k">${m[1]}</div><div class="v">${v}</div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join('');
+  $('usageBox').innerHTML = `
+    <div class="kv">当前套餐：<span class="pill">${u.plan}</span> ${quotaHtml} · 计费周期始于 ${new Date(u.period_start).toLocaleString('zh-CN')}</div>
+    <div class="grid">${bars}</div>`;
+}
+
+async function loadKeys(){
+  const { status, j } = await api('GET','/v1/keys');
+  if (status!==200) return;
+  const tb = $('keysTable').querySelector('tbody'); tb.innerHTML='';
+  (j.keys||[]).forEach(k=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td><code>${k.key}</code></td><td>${esc(k.label||'')}</td>
+      <td><span class="pill">${k.plan}</span></td><td>${k.rate_limit}/min</td>
+      <td>${k.enabled?'<span class="pill g">启用</span>':'<span class="pill r">禁用</span>'}</td>
+      <td>${k.enabled?'<button class="danger" onclick="toggleKey(\''+k.key+'\',false)">禁用</button>':'<button class="sec" onclick="toggleKey(\''+k.key+'\',true)">启用</button>'}</td>`;
+    tb.appendChild(tr);
+  });
+}
+async function toggleKey(key,enable){
+  const { status, j } = await api('POST','/v1/keys/'+encodeURIComponent(key)+'/'+(enable?'enable':'disable'));
+  setMsg('keyMsg', status===200?'已'+(enable?'启用':'禁用'):'操作失败','ok');
+  await loadKeys();
+}
+async function createKey(){
+  const label=$('newLabel').value.trim();
+  const plan=$('newPlan').value;
+  const rate=parseInt($('newRate').value,10);
+  const body={ plan }; if(label)body.label=label; if(rate>0)body.rate_limit=rate;
+  const { status, j } = await api('POST','/v1/keys',body);
+  if(status===201){
+    setMsg('keyMsg','已创建：'+j.key+'（请妥善保存，仅显示一次）','ok');
+    $('newLabel').value=''; $('newRate').value='';
+    await loadKeys();
+  } else setMsg('keyMsg','创建失败：'+(j&&j.error?j.error.message:status),'bad');
+}
+
+async function loadWebhook(){
+  const { status, j } = await api('GET','/v1/webhook');
+  if(status!==200) return;
+  if(j.url){
+    $('whUrl').value=j.url;
+    $('whStatus').innerHTML='当前：<code>'+esc(j.url)+'</code> · 校验：'+(j.verified?'<span class="pill g">已通过</span>':'<span class="pill y">未通过/未校验</span>');
+  } else {
+    $('whStatus').innerHTML='<span class="pill">未配置</span>';
+  }
+}
+async function saveWebhook(){
+  const url=$('whUrl').value.trim();
+  if(!url) return setMsg('whMsg','请输入 URL','bad');
+  const { status, j } = await api('POST','/v1/webhook',{url});
+  if(status===200){
+    setMsg('whMsg', j.verified?'已保存并通过连通性校验 ✓':('已保存，但连通性校验未通过（'+url+' 需可公网访问并正确响应）'), j.verified?'ok':'warn');
+    await loadWebhook();
+  } else setMsg('whMsg','保存失败：'+(j&&j.error?j.error.message:status),'bad');
+}
+async function clearWebhook(){
+  const { status, j } = await api('POST','/v1/webhook',{url:''});
+  if(status===200){ setMsg('whMsg','已清空 Webhook','ok'); $('whUrl').value=''; await loadWebhook(); }
+}
+
+function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+if (TOKEN) connect().catch(()=>{});
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# 运行时数据与密钥（切勿提交）
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+node_modules/
+.workbuddy/

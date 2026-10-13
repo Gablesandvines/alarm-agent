@@ -1,0 +1,852 @@
+openapi: 3.0.3
+info:
+  title: 闹钟 Agent 开放 API
+  version: 1.0.0
+  description: >
+    把"自然语言"解析为"结构化闹钟时间"的开放接口（B 端定时能力平台）。规则引擎优先（置信度 ≥ 0.85 零成本直接返回），
+    仅长尾歧义在配置了 LLM Key 时走 LLM 兜底。v1.2 起新增"托管闹钟"能力：调用方无需自建存储，
+    可直接创建/查询/更新/删除多租户隔离的闹钟记录（按 API Key 的 tenant 自动隔离），并可基于自然语言解析创建。
+    v1.3（Phase 3）新增「Webhook 触发投递」与「用量计量」：闹钟到点后服务端向租户配置的回调 URL 推送 alarm.fired 事件
+    （带 HMAC 签名 + 重试），并提供按 Key 的调用/触发用量统计，为计费打地基。
+    v1.4（Phase 4）新增「开发者门户 + 计费套餐 + 数据库化」：可自助管理 API 密钥（/v1/keys）、三档套餐
+    （free/pro/enterprise，含月度解析配额）、持久层统一迁移至 SQLite（data/alarm.db），并提供开发者控制台 /portal。
+  contact:
+    name: 闹钟 Agent
+servers:
+  - url: https://your-domain.example.com
+    description: 生产环境（需 HTTPS）
+  - url: http://localhost:8080
+    description: 本地开发（server.js 默认端口）
+security:
+  - ApiKeyAuth: []
+paths:
+  /v1/parse:
+    post:
+      summary: 解析自然语言为闹钟时间
+      operationId: parseAlarm
+      description: >
+        输入一句中文（口语化、含相对/绝对时间、重复、动作），返回结构化闹钟时间 JSON。
+        若无法确定时间，success=false 且 needs_clarification=true，并在 ambiguities 中给出澄清提示。
+      tags: [解析]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ParseRequest'
+            examples:
+              wakeup:
+                summary: 日锚点 + 动作
+                value: { text: "明天早上8点叫我起床" }
+              later:
+                summary: 相对时间
+                value: { text: "30分钟后提醒我开会" }
+              vague:
+                summary: 模糊输入（需澄清）
+                value: { text: "待会提醒我喝水" }
+      responses:
+        '200':
+          description: 解析结果（注意 success 可能为 false，表示需澄清而非错误）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParseResponse'
+              examples:
+                ok:
+                  summary: 成功
+                  value:
+                    success: true
+                    raw: "明天早上8点叫我起床"
+                    source: "rule"
+                    alarm:
+                      timestamp: 1760563200
+                      datetime: "2026-10-10T08:00:00+08:00"
+                      date: "2026-10-10"
+                      time: "08:00"
+                      recurrence: "none"
+                      timezone: "Asia/Shanghai"
+                      lead_minutes: 0
+                      label: "起床"
+                      enabled: true
+                    confidence: 0.9
+                    needs_clarification: false
+                    ambiguities: []
+                    request_id: "req_01HX..."
+                clarify:
+                  summary: 需澄清
+                  value:
+                    success: false
+                    raw: "待会提醒我喝水"
+                    source: "rule"
+                    alarm: null
+                    confidence: 0.3
+                    needs_clarification: true
+                    ambiguities: ["「待会」是多久后呢？告诉我具体时间，例如："]
+                    clarification:
+                      type: "time_anchor"
+                      question: "「待会」是多久后呢？告诉我具体时间，例如："
+                      suggestions: ["30分钟后", "1小时后", "今晚8点", "明天早上9点"]
+                    request_id: "req_01HX..."
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '402': { $ref: '#/components/responses/QuotaExceeded' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /v1/health:
+    get:
+      summary: 健康检查
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "ok" }
+                  version: { type: string, example: "1.4.0" }
+  /v1/webhook:
+    get:
+      summary: 查询 Webhook 配置
+      operationId: getWebhook
+      tags: [Webhook & 用量]
+      description: 返回当前租户配置的回调 URL 及其连通性验证状态。
+      responses:
+        '200':
+          description: 当前 Webhook 配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookConfig' }
+              example:
+                url: "https://example.com/alarm-hook"
+                verified: true
+                request_id: "req_01HX..."
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    post:
+      summary: 设置 / 清空 Webhook
+      operationId: setWebhook
+      tags: [Webhook & 用量]
+      description: >
+        设置当前租户的回调 URL（闹钟触发时推送 alarm.fired）。URL 必须为 https（本地联调用 http://localhost 允许）。
+        设置后会立即发送一次 webhook.test 连通性探测，并把 verified 结果返回。传空 url 表示清空。
+        平台在投递时会在请求头附带 X-Alarm-Signature（HMAC-SHA256，以 API Key 为密钥对 body 签名，前缀 sha256=）、
+        X-Alarm-Event、X-Alarm-Delivery-Id，便于接收端验签与去重。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  nullable: true
+                  description: 回调地址；传 null 或空字符串清空
+                  example: "https://example.com/alarm-hook"
+            examples:
+              set:
+                summary: 设置
+                value: { url: "https://example.com/alarm-hook" }
+              clear:
+                summary: 清空
+                value: { url: "" }
+      responses:
+        '200':
+          description: 设置/清空结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookConfig' }
+              example:
+                ok: true
+                url: "https://example.com/alarm-hook"
+                verified: true
+                request_id: "req_01HX..."
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /v1/usage:
+    get:
+      summary: 查询用量统计
+      operationId: getUsage
+      tags: [Webhook & 用量]
+      description: 返回当前 API Key 的累计用量（解析次数、闹钟增删改次数、触发投递次数），为计费打地基。
+      responses:
+        '200':
+          description: 用量统计
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usage' }
+              example:
+                tenant: "demo"
+                usage:
+                  parse_count: 12
+                  alarm_create: 3
+                  alarm_update: 1
+                  alarm_delete: 0
+                  fire_count: 2
+                  since: "2026-10-09T17:00:00.000Z"
+                request_id: "req_01HX..."
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /v1/keys:
+    get:
+      summary: 列出当前租户的密钥
+      operationId: listKeys
+      tags: [密钥管理]
+      description: 返回当前 API Key 所属租户下的全部密钥（Key 字符串已脱敏）。仅能查看/管理自己租户的密钥。
+      responses:
+        '200':
+          description: 密钥列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer, example: 2 }
+                  keys:
+                    type: array
+                    items: { $ref: '#/components/schemas/KeyRecord' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    post:
+      summary: 创建新密钥
+      operationId: createKey
+      tags: [密钥管理]
+      description: 在当前租户下创建一枚新密钥。可指定套餐（free/pro/enterprise）与自定义限额；默认套用套餐默认值。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/KeyCreate' }
+            examples:
+              pro:
+                summary: 创建专业版密钥
+                value: { label: "生产环境", plan: "pro" }
+      responses:
+        '201':
+          description: 创建成功（完整 Key 仅此刻返回，请妥善保存）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KeyRecord' }
+              example:
+                key: "sk_live_xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"
+                tenant: "demo"
+                label: "生产环境"
+                enabled: true
+                rate_limit: 600
+                plan: "pro"
+                created_at: "2026-10-12T10:00:00.000Z"
+                request_id: "req_01HX..."
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /v1/keys/{key}/{action}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
+        description: 目标密钥完整字符串
+        example: "sk_live_xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"
+      - name: action
+        in: path
+        required: true
+        schema: { type: string, enum: [disable, enable] }
+        description: 启用或禁用
+        example: "disable"
+    post:
+      summary: 启用 / 禁用密钥
+      operationId: toggleKey
+      tags: [密钥管理]
+      description: 仅能操作属于当前租户的密钥。禁用后该密钥立即失效（401）。
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  key: { type: string }
+                  enabled: { type: boolean, example: false }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /v1/alarms:
+    post:
+      summary: 创建托管闹钟
+      operationId: createAlarm
+      tags: [托管闹钟]
+      description: >
+        在当前租户下创建一条闹钟记录。两种创建方式：① 传 text（自然语言）由平台解析；
+        ② 传 time + 可选 date/recurrence/timezone 显式创建。支持 idempotency_key 幂等：同一租户重复提交返回已有记录。
+        解析失败（模糊输入）返回 422，并带 clarification 供调用方追问。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlarmCreate' }
+            examples:
+              byText:
+                summary: 自然语言创建
+                value: { text: "明天早上8点叫我起床", idempotency_key: "order-9981" }
+              explicit:
+                summary: 显式时间创建（每周一9点）
+                value: { time: "09:00", recurrence: "weekly:1", label: "周会", timezone: "Asia/Shanghai" }
+      responses:
+        '201':
+          description: 创建成功（新建记录）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlarmRecord' }
+              examples:
+                created:
+                  summary: 已创建
+                  value:
+                    id: "a_1f3c9a2b7d8e4f60"
+                    tenant: "demo"
+                    text: "明天早上8点叫我起床"
+                    alarm:
+                      timestamp: 1760563200
+                      datetime: "2026-10-10T08:00:00+08:00"
+                      date: "2026-10-10"
+                      time: "08:00"
+                      recurrence: "none"
+                      timezone: "Asia/Shanghai"
+                      lead_minutes: 0
+                      label: "起床"
+                      enabled: true
+                    enabled: true
+                    created_at: "2026-10-09T17:00:00.000Z"
+                    updated_at: "2026-10-09T17:00:00.000Z"
+                    idempotency_key: "order-9981"
+                    next_trigger: 1760563200000
+                    request_id: "req_01HX..."
+                    idempotent: false
+        '200':
+          description: 幂等命中（同 idempotency_key 重复提交，返回已有记录，未新建）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlarmRecord' }
+              examples:
+                idempotent:
+                  summary: 返回已有记录
+                  value:
+                    id: "a_1f3c9a2b7d8e4f60"
+                    tenant: "demo"
+                    text: "明天早上8点叫我起床"
+                    alarm:
+                      timestamp: 1760563200
+                      datetime: "2026-10-10T08:00:00+08:00"
+                      date: "2026-10-10"
+                      time: "08:00"
+                      recurrence: "none"
+                      timezone: "Asia/Shanghai"
+                      lead_minutes: 0
+                      label: "起床"
+                      enabled: true
+                    enabled: true
+                    created_at: "2026-10-09T17:00:00.000Z"
+                    updated_at: "2026-10-09T17:00:00.000Z"
+                    idempotency_key: "order-9981"
+                    next_trigger: 1760563200000
+                    request_id: "req_01HX..."
+                    idempotent: true
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: 自然语言解析无法确定时间（需澄清）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ParseResponse' }
+              example:
+                success: false
+                needs_clarification: true
+                clarification:
+                  type: "time_anchor"
+                  question: "「待会」是多久后呢？告诉我具体时间，例如："
+                  suggestions: ["30分钟后", "1小时后", "今晚8点", "明天早上9点"]
+                request_id: "req_01HX..."
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    get:
+      summary: 列出当前租户的闹钟
+      operationId: listAlarms
+      tags: [托管闹钟]
+      description: 返回当前 API Key 所属租户下的闹钟列表，支持 enabled 过滤与 limit 分页。
+      parameters:
+        - name: enabled
+          in: query
+          required: false
+          schema: { type: string, enum: ["true", "false"] }
+          description: 仅返回启用/禁用项
+          example: "true"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000 }
+          description: 最多返回条数（默认全部）
+          example: 50
+      responses:
+        '200':
+          description: 闹钟列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlarmList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /v1/alarms/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: 闹钟记录 ID
+        example: "a_1f3c9a2b7d8e4f60"
+    get:
+      summary: 获取单条闹钟
+      operationId: getAlarm
+      tags: [托管闹钟]
+      responses:
+        '200':
+          description: 闹钟详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlarmRecord' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: 闹钟不存在（或不属于当前租户）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: "not_found", message: "闹钟不存在" }
+                request_id: "req_01HX..."
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    patch:
+      summary: 更新闹钟
+      operationId: updateAlarm
+      tags: [托管闹钟]
+      description: >
+        局部更新闹钟。可改 text（重新解析）、recurrence、time、date、label、timezone、lead_minutes、enabled。
+        服务端会自动重算 next_trigger。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlarmUpdate' }
+            examples:
+              disable:
+                summary: 禁用
+                value: { enabled: false }
+              changeTime:
+                summary: 改时间（自然语言重解析）
+                value: { text: "后天上午10点吃药" }
+      responses:
+        '200':
+          description: 更新后的闹钟
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlarmRecord' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+    delete:
+      summary: 删除闹钟
+      operationId: deleteAlarm
+      tags: [托管闹钟]
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: string, example: "a_1f3c9a2b7d8e4f60" }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/ServerError' }
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: "值为 `Bearer <API_KEY>`"
+  schemas:
+    ParseRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: 自然语言输入（建议 ≤ 200 字）
+          example: "明天早上8点叫我起床"
+        timezone:
+          type: string
+          default: "Asia/Shanghai"
+          description: IANA 时区名；默认 Asia/Shanghai（UTC+8，无夏令时）
+          example: "Asia/Shanghai"
+        now:
+          type: string
+          format: date-time
+          description: 可选。覆盖"当前时间"用于确定性测试/回放（默认取服务器当前时间）
+          example: "2026-10-09T17:00:00+08:00"
+    Alarm:
+      type: object
+      description: 解析出的闹钟时间对象（success=true 时存在）
+      properties:
+        timestamp:
+          type: integer
+          description: Unix 秒级时间戳（UTC）
+          example: 1760563200
+        datetime:
+          type: string
+          description: ISO8601 含时区偏移
+          example: "2026-10-10T08:00:00+08:00"
+        date:
+          type: string
+          example: "2026-10-10"
+        time:
+          type: string
+          pattern: "^\\d{2}:\\d{2}$"
+          example: "08:00"
+        recurrence:
+          type: string
+          description: "none | daily | weekdays | weekend | weekly:N(0=周日) | every:N | biweekly:N"
+          example: "none"
+        timezone:
+          type: string
+          example: "Asia/Shanghai"
+        lead_minutes:
+          type: integer
+          description: 提前提醒分钟数
+          example: 0
+        label:
+          type: string
+          description: 动作/备注（已从时间词中剥离）
+          example: "起床"
+        enabled:
+          type: boolean
+          example: true
+    ParseResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        raw: { type: string, example: "明天早上8点叫我起床" }
+        source:
+          type: string
+          enum: [rule, llm]
+          description: 解析来源；rule=规则引擎，llm=LLM 兜底
+        alarm: { $ref: '#/components/schemas/Alarm' }
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          example: 0.9
+        needs_clarification:
+          type: boolean
+          example: false
+        ambiguities:
+          type: array
+          items: { type: string }
+        clarification:
+          type: object
+          description: 需澄清时的聚焦追问（v1 引擎新增）
+          properties:
+            type: { type: string, example: "time_anchor" }
+            question: { type: string }
+            suggestions:
+              type: array
+              items: { type: string }
+        request_id:
+          type: string
+          description: 本次请求唯一 ID，便于排障
+    AlarmRecord:
+      type: object
+      description: 一条托管闹钟记录（含解析结果 + 平台元数据）
+      properties:
+        id:
+          type: string
+          description: 平台生成的记录 ID
+          example: "a_1f3c9a2b7d8e4f60"
+        tenant:
+          type: string
+          description: 所属租户（由 API Key 自动映射，调用方不可见/不可改）
+          example: "demo"
+        text:
+          type: string
+          nullable: true
+          description: 创建时使用的自然语言（显式创建则为 null）
+          example: "明天早上8点叫我起床"
+        alarm: { $ref: '#/components/schemas/Alarm' }
+        enabled: { type: boolean, example: true }
+        created_at: { type: string, format: date-time, example: "2026-10-09T17:00:00.000Z" }
+        updated_at: { type: string, format: date-time, example: "2026-10-09T17:00:00.000Z" }
+        idempotency_key:
+          type: string
+          nullable: true
+          description: 幂等键（若创建时提供）
+          example: "order-9981"
+        next_trigger:
+          type: integer
+          nullable: true
+          description: 下一次触发时间的 Unix 毫秒时间戳；一次性已触发则为 null
+          example: 1760563200000
+    AlarmCreate:
+      type: object
+      properties:
+        text:
+          type: string
+          maxLength: 200
+          description: 自然语言输入（与 time 二选一）
+          example: "明天早上8点叫我起床"
+        time:
+          type: string
+          pattern: "^\\d{2}:\\d{2}$"
+          description: 显式时间（HH:MM，与 text 二选一）
+          example: "09:00"
+        date:
+          type: string
+          description: 显式日期（YYYY-MM-DD，仅一次性闹钟需要）
+          example: "2026-10-10"
+        recurrence:
+          type: string
+          description: "none | daily | weekdays | weekend | weekly:N | every:N | biweekly:N"
+          default: "none"
+          example: "none"
+        timezone:
+          type: string
+          default: "Asia/Shanghai"
+          example: "Asia/Shanghai"
+        label:
+          type: string
+          description: 动作/备注
+          example: "起床"
+        lead_minutes:
+          type: integer
+          description: 提前提醒分钟数
+          default: 0
+          example: 0
+        enabled:
+          type: boolean
+          default: true
+          example: true
+        idempotency_key:
+          type: string
+          description: 幂等键；同一租户重复提交返回已有记录（HTTP 201，带 idempotent=true）
+          example: "order-9981"
+        now:
+          type: string
+          format: date-time
+          description: 可选；覆盖"当前时间"用于确定性解析/回放
+    AlarmUpdate:
+      type: object
+      properties:
+        text: { type: string, maxLength: 200, description: "传则重新解析自然语言（成功才覆盖 alarm）" }
+        recurrence: { type: string, example: "weekly:1" }
+        time: { type: string, pattern: "^\\d{2}:\\d{2}$", example: "09:00" }
+        date: { type: string, example: "2026-10-10" }
+        label: { type: string, example: "周会" }
+        timezone: { type: string, example: "Asia/Shanghai" }
+        lead_minutes: { type: integer, example: 0 }
+        enabled: { type: boolean, example: false }
+    AlarmList:
+      type: object
+      properties:
+        count: { type: integer, example: 2 }
+        alarms:
+          type: array
+          items: { $ref: '#/components/schemas/AlarmRecord' }
+        request_id: { type: string }
+    WebhookConfig:
+      type: object
+      properties:
+        ok: { type: boolean, example: true }
+        url:
+          type: string
+          nullable: true
+          description: 回调地址（清空时为 null）
+          example: "https://example.com/alarm-hook"
+        verified:
+          type: boolean
+          description: 最近一次连通性探测是否成功（2xx）
+          example: true
+        request_id: { type: string }
+    Usage:
+      type: object
+      properties:
+        tenant: { type: string, example: "demo" }
+        usage:
+          type: object
+          properties:
+            parse_count: { type: integer, example: 12, description: "/v1/parse 调用次数" }
+            alarm_create: { type: integer, example: 3, description: "创建闹钟次数" }
+            alarm_update: { type: integer, example: 1, description: "更新闹钟次数" }
+            alarm_delete: { type: integer, example: 0, description: "删除闹钟次数" }
+            fire_count: { type: integer, example: 2, description: "Webhook 触发投递次数" }
+            since: { type: string, format: date-time, description: "统计起始时间" }
+        request_id: { type: string }
+    WebhookEvent:
+      type: object
+      description: 服务端向回调 URL 推送的事件体（POST application/json）
+      properties:
+        event:
+          type: string
+          enum: [alarm.fired, webhook.test]
+          example: "alarm.fired"
+        alarm_id: { type: string, example: "a_1f3c9a2b7d8e4f60" }
+        tenant: { type: string, example: "demo" }
+        text: { type: string, nullable: true, example: "明天早上8点叫我起床" }
+        alarm: { $ref: '#/components/schemas/Alarm' }
+        fired_at: { type: string, format: date-time, example: "2026-10-10T00:00:00.000Z" }
+        request_id: { type: string }
+    KeyRecord:
+      type: object
+      description: 一枚 API 密钥（列表接口返回时已脱敏；创建接口返回完整 Key）
+      properties:
+        key:
+          type: string
+          description: 完整 Key（仅创建时返回一次）；列表时返回脱敏串（前 10 + 后 4）
+          example: "sk_live_xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"
+        tenant:
+          type: string
+          description: 所属租户（由创建时的父密钥决定，调用方不可改）
+          example: "demo"
+        label: { type: string, example: "生产环境" }
+        enabled: { type: boolean, example: true }
+        rate_limit: { type: integer, description: "每分钟请求上限（默认由套餐决定）", example: 600 }
+        plan:
+          type: string
+          enum: [free, pro, enterprise]
+          description: "计费套餐：free=60/min,5k/月；pro=600/min,100k/月；enterprise=6000/min,不限"
+          example: "pro"
+        created_at: { type: string, format: date-time, example: "2026-10-12T10:00:00.000Z" }
+    KeyCreate:
+      type: object
+      properties:
+        label:
+          type: string
+          description: 密钥名称/备注
+          example: "生产环境"
+        plan:
+          type: string
+          enum: [free, pro, enterprise]
+          default: "free"
+          example: "pro"
+        rate_limit:
+          type: integer
+          description: 自定义每分钟限额（留空则使用套餐默认值）
+          example: 600
+    PlanConfig:
+      type: object
+      description: 计费套餐配置（参考；实际以服务端为准）
+      properties:
+        free:
+          type: object
+          properties:
+            rate_limit: { type: integer, example: 60 }
+            monthly_parse_quota: { type: integer, example: 5000 }
+        pro:
+          type: object
+          properties:
+            rate_limit: { type: integer, example: 600 }
+            monthly_parse_quota: { type: integer, example: 100000 }
+        enterprise:
+          type: object
+          properties:
+            rate_limit: { type: integer, example: 6000 }
+            monthly_parse_quota: { type: integer, nullable: true, description: "不限", example: null }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: "invalid_api_key" }
+            message: { type: string, example: "API Key 无效或已禁用" }
+        request_id: { type: string }
+  responses:
+    BadRequest:
+      description: 请求参数错误（如缺少 text / 超长）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: "bad_request", message: "缺少必填字段 text" }
+            request_id: "req_01HX..."
+    Unauthorized:
+      description: 缺少或无效的 API Key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: "invalid_api_key", message: "API Key 无效或已禁用" }
+            request_id: "req_01HX..."
+    Forbidden:
+      description: 密钥存在但已被禁用/超额
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: "key_disabled", message: "该 API Key 已被禁用" }
+            request_id: "req_01HX..."
+    NotFound:
+      description: 资源不存在（或不属于当前租户）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: "not_found", message: "闹钟不存在" }
+            request_id: "req_01HX..."
+    TooManyRequests:
+      description: 触发限流
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: "rate_limited", message: "请求过于频繁，请稍后重试" }
+            request_id: "req_01HX..."
+    QuotaExceeded:
+      description: 月度解析配额已用尽（按套餐）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: "quota_exceeded", message: "本月解析配额（5000）已用尽，请升级套餐或下个计费周期再试" }
+            request_id: "req_01HX..."
+    ServerError:
+      description: 服务端异常
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: "internal", message: "服务器内部错误" }
+            request_id: "req_01HX..."

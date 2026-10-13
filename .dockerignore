@@ -1,0 +1,12 @@
+node_modules
+data
+.git
+.workbuddy
+tests
+*.md
+# 临时库与密钥文件切勿打进镜像
+*.db
+*.db-wal
+*.db-shm
+# 含生产密钥的 .env 不进镜像（仅 .env.example 模板保留）
+.env

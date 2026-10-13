@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>闹钟 Agent 开放 API · 接口参考与示例</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#181b22; --ink:#e7eaf0; --sub:#9aa3b2; --line:#2a2f3a;
+    --ok:#3ddc84; --bad:#ff6b6b; --accent:#5b9dff; --code:#0b0d12; --chip:#222834;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 22px 80px}
+  h1{font-size:28px;margin:0 0 6px}
+  h2{font-size:20px;margin:46px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:26px 0 8px;color:var(--accent)}
+  .lead{color:var(--sub);margin:0 0 8px}
+  .tag{display:inline-block;padding:2px 10px;border-radius:999px;background:var(--chip);color:var(--sub);font-size:12px;font-weight:600}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .path{font-family:"SF Mono",Consolas,monospace;font-size:14px;background:var(--code);border:1px solid var(--line);border-radius:8px;padding:8px 12px;display:inline-block;color:#cfe3ff}
+  .method{font-weight:700;padding:2px 8px;border-radius:6px;font-size:12px;margin-right:8px}
+  .m-get{background:#16384f;color:#7fd1ff}.m-post{background:#15402a;color:#7ff0b0}.m-patch{background:#3a3416;color:#ffd97f}.m-delete{background:#3f1722;color:#ff9db0}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;font-family:"SF Mono",Consolas,monospace;font-size:13px;line-height:1.6;color:#d7e2f4;margin:10px 0}
+  .lbl{font-size:12px;letter-spacing:.04em;color:var(--sub);text-transform:uppercase;margin:14px 0 4px;font-weight:700}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--chip);color:var(--sub);font-weight:600}
+  code{background:var(--code);border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-family:"SF Mono",Consolas,monospace;font-size:13px;color:#cfe3ff}
+  .ok{color:var(--ok);font-weight:700}.bad{color:var(--bad);font-weight:700}
+  .note{background:#13202e;border-left:3px solid var(--accent);padding:10px 14px;border-radius:8px;color:#cfe0f5;font-size:14px;margin:12px 0}
+  a{color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>闹钟 Agent 开放 API · 接口参考与示例</h1>
+  <p class="lead">把「自然语言」解析成「结构化闹钟时间」，并可托管、管理多租户闹钟。规则引擎优先（零成本），长尾由 LLM 兜底。</p>
+  <p>
+    <span class="tag">Base URL</span> <code>https://your-domain.example.com</code>（本地：<code>http://localhost:8080</code>）<br>
+    <span class="tag">协议版本</span> <code>v1</code> · <code>1.0.0</code> &nbsp;
+    <span class="tag">鉴权</span> <code>Authorization: Bearer &lt;API_KEY&gt;</code>
+  </p>
+
+  <div class="note">
+    <b>快速拿到 Key：</b> 本地启动 <code>node server.js</code> 首次会自动生成一枚示例 Key（看日志）；正式 Key 用
+    <code>node manage_keys.js create --label "我的应用" --rate 100 --plan pro</code> 生成，存于 <code>data/alarm.db</code>（SQLite）。
+    更推荐直接打开 <b>开发者门户</b> <code>/portal</code> 自助管理。
+  </div>
+
+  <h2>0. 通用约定</h2>
+  <ul>
+    <li><b>鉴权：</b>所有 <code>/v1/*</code> 接口（除 <code>/v1/health</code>）都需 <code>Authorization: Bearer &lt;API_KEY&gt;</code>。缺失→<code>401 missing_api_key</code>，无效→<code>401 invalid_api_key</code>，禁用→<code>403 key_disabled</code>。</li>
+    <li><b>限流：</b>按 Key 的 60 秒滑动窗口，默认 60 次/分（每 Key 可覆盖）。超额→<code>429 rate_limited</code>，带 <code>Retry-After</code> 头。</li>
+    <li><b>统一错误体：</b><code>{ "error": { "code": "...", "message": "..." }, "request_id": "req_..." }</code></li>
+    <li><b>HTTP 200 ≠ 解析成功：</b>模糊输入返回 <code>200</code> 但 <code>success:false</code> + <code>clarification</code>，由调用方决定是否追问。</li>
+    <li><b>时区：</b>固定 <code>Asia/Shanghai</code>（UTC+8，无夏令时），除非显式覆盖。</li>
+  </ul>
+
+  <h2>1. 健康检查（免鉴权）</h2>
+  <div class="card">
+    <span class="method m-get">GET</span><span class="path">/v1/health</span>
+    <pre>curl https://your-domain.example.com/v1/health</pre>
+    <div class="lbl">响应 200</div>
+    <pre>{ "status": "ok", "version": "1.0.0", "request_id": "req_01HX..." }</pre>
+  </div>
+
+  <h2>2. 解析自然语言 → 闹钟时间</h2>
+  <div class="card">
+    <span class="method m-post">POST</span><span class="path">/v1/parse</span>
+    <p class="lead">请求体：<code>{ "text": "明天早上8点叫我起床", "timezone?": "Asia/Shanghai", "now?": "2026-10-09T12:00:00+08:00" }</code>。<code>now</code> 可选，用于确定性测试/回放。</p>
+
+    <div class="grid2">
+      <div>
+        <div class="lbl">curl</div>
+        <pre>curl -X POST https://your-domain.example.com/v1/parse \
+  -H "Authorization: Bearer &lt;API_KEY&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"明天早上8点叫我起床"}'</pre>
+      </div>
+      <div>
+        <div class="lbl">JavaScript (fetch)</div>
+        <pre>const r = await fetch('/v1/parse', {
+  method:'POST',
+  headers:{'Authorization':'Bearer '+KEY,
+          'Content-Type':'application/json'},
+  body: JSON.stringify({text:'明天早上8点叫我起床'})
+});
+const j = await r.json();</pre>
+      </div>
+    </div>
+    <div class="lbl">Python (requests)</div>
+    <pre>import requests
+r = requests.post('https://your-domain.example.com/v1/parse',
+    headers={'Authorization':'Bearer '+KEY},
+    json={'text':'明天早上8点叫我起床'})
+print(r.json())</pre>
+
+    <div class="lbl">成功响应 200</div>
+    <pre>{
+  "success": true,
+  "raw": "明天早上8点叫我起床",
+  "source": "rule",
+  "alarm": {
+    "timestamp": 1760563200,
+    "datetime": "2026-10-10T08:00:00+08:00",
+    "date": "2026-10-10",
+    "time": "08:00",
+    "recurrence": "none",
+    "timezone": "Asia/Shanghai",
+    "lead_minutes": 0,
+    "label": "起床",
+    "enabled": true
+  },
+  "confidence": 0.9,
+  "needs_clarification": false,
+  "ambiguities": [],
+  "request_id": "req_01HX..."
+}</pre>
+
+    <div class="lbl">模糊输入响应 200（需澄清，调用方自行追问）</div>
+    <pre>{
+  "success": false,
+  "raw": "待会提醒我喝水",
+  "source": "rule",
+  "alarm": null,
+  "confidence": 0.3,
+  "needs_clarification": true,
+  "ambiguities": ["「待会」是多久后呢？告诉我具体时间，例如："],
+  "clarification": {
+    "type": "time_anchor",
+    "question": "「待会」是多久后呢？告诉我具体时间，例如：",
+    "suggestions": ["30分钟后", "1小时后", "今晚8点", "明天早上9点"]
+  },
+  "request_id": "req_01HX..."
+}</pre>
+  </div>
+
+  <h2>3. 托管闹钟 CRUD（多租户隔离）</h2>
+  <p class="lead">闹钟按 API Key 的 <code>tenant</code> 自动隔离，调用方无感知。无需自建存储，平台托管。以下以 <code>&lt;KEY&gt;</code> 代表你的 Key。</p>
+
+  <h3>3.1 创建（自然语言）</h3>
+  <div class="card">
+    <span class="method m-post">POST</span><span class="path">/v1/alarms</span>
+    <div class="lbl">请求（带幂等键）</div>
+    <pre>curl -X POST https://your-domain.example.com/v1/alarms \
+  -H "Authorization: Bearer &lt;KEY&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"明天早上8点叫我起床","idempotency_key":"order-9981"}'</pre>
+    <div class="lbl">响应 201（新建） / 200（幂等命中，重复提交返回已有记录）</div>
+    <pre>{
+  "id": "a_1f3c9a2b7d8e4f60",
+  "tenant": "demo",
+  "text": "明天早上8点叫我起床",
+  "alarm": { "timestamp": 1760563200, "datetime": "2026-10-10T08:00:00+08:00",
+             "date": "2026-10-10", "time": "08:00", "recurrence": "none",
+             "timezone": "Asia/Shanghai", "lead_minutes": 0, "label": "起床", "enabled": true },
+  "enabled": true,
+  "created_at": "2026-10-09T17:00:00.000Z",
+  "updated_at": "2026-10-09T17:00:00.000Z",
+  "idempotency_key": "order-9981",
+  "next_trigger": 1760563200000,
+  "request_id": "req_01HX...",
+  "idempotent": false
+}</pre>
+    <div class="note">支持两种创建：① 传 <code>text</code> 由平台解析；② 传 <code>time</code> + 可选 <code>date/recurrence/timezone/label</code> 显式创建。模糊输入（解析不出时间）→ <span class="bad">422</span> + <code>clarification</code>。</div>
+  </div>
+
+  <h3>3.2 列表</h3>
+  <div class="card">
+    <span class="method m-get">GET</span><span class="path">/v1/alarms?enabled=true&amp;limit=50</span>
+    <pre>curl "https://your-domain.example.com/v1/alarms?enabled=true" \
+  -H "Authorization: Bearer &lt;KEY&gt;"</pre>
+    <div class="lbl">响应 200</div>
+    <pre>{ "count": 2, "alarms": [ /* AlarmRecord[] */ ], "request_id": "req_01HX..." }</pre>
+  </div>
+
+  <h3>3.3 获取 / 更新 / 删除单条</h3>
+  <div class="card">
+    <span class="method m-get">GET</span><span class="path">/v1/alarms/:id</span>
+    <span class="method m-patch">PATCH</span><span class="path">/v1/alarms/:id</span>
+    <span class="method m-delete">DELETE</span><span class="path">/v1/alarms/:id</span>
+    <div class="lbl">获取</div>
+    <pre>curl https://your-domain.example.com/v1/alarms/a_1f3c9a2b7d8e4f60 \
+  -H "Authorization: Bearer &lt;KEY&gt;"</pre>
+    <div class="lbl">更新（禁用 / 或改自然语言重解析）</div>
+    <pre>curl -X PATCH https://your-domain.example.com/v1/alarms/a_1f3c9a2b7d8e4f60 \
+  -H "Authorization: Bearer &lt;KEY&gt;" -H "Content-Type: application/json" \
+  -d '{"enabled":false}'           # 或 {"text":"后天上午10点吃药"} 重新解析</pre>
+    <div class="lbl">删除</div>
+    <pre>curl -X DELETE https://your-domain.example.com/v1/alarms/a_1f3c9a2b7d8e4f60 \
+  -H "Authorization: Bearer &lt;KEY&gt;"
+# → { "ok": true, "id": "a_1f3c9a2b7d8e4f60", "request_id": "req_01HX..." }</pre>
+    <div class="note">PATCH 可局部更新 <code>text / recurrence / time / date / label / timezone / lead_minutes / enabled</code>，服务端自动重算 <code>next_trigger</code>。不存在或不属于当前租户→ <span class="bad">404</span>。</div>
+  </div>
+
+  <h2>4. Webhook 触发投递 & 用量计量（Phase 3）</h2>
+  <p class="lead">托管闹钟到点后，平台会向租户配置的回调 URL 推送 <code>alarm.fired</code> 事件（带 HMAC 签名 + 3 次指数退避重试），由你决定发推送 / SMS / 触发业务。同时提供按 Key 的调用与触发用量统计，为计费打地基。</p>
+
+  <h3>4.1 配置回调地址</h3>
+  <div class="card">
+    <span class="method m-get">GET</span><span class="path">/v1/webhook</span>
+    <span class="method m-post">POST</span><span class="path">/v1/webhook</span>
+    <div class="lbl">设置（须 https；本地联调用 http://localhost 允许）</div>
+    <pre>curl -X POST https://your-domain.example.com/v1/webhook \
+  -H "Authorization: Bearer &lt;KEY&gt;" -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/alarm-hook"}'
+# → {"ok":true,"url":"https://example.com/alarm-hook","verified":true,"request_id":"req_..."}
+# 传 url:"" 清空配置</pre>
+    <div class="lbl">查询</div>
+    <pre>curl https://your-domain.example.com/v1/webhook -H "Authorization: Bearer &lt;KEY&gt;"
+# → {"url":"https://example.com/alarm-hook","verified":true,"request_id":"req_..."}</pre>
+  </div>
+
+  <h3>4.2 接收端：如何验证与处理</h3>
+  <div class="card">
+    <p class="lead">服务端投递的请求头与事件体示例：</p>
+    <pre>POST https://example.com/alarm-hook
+Headers:
+  Content-Type: application/json
+  X-Alarm-Event: alarm.fired
+  X-Alarm-Delivery-Id: &lt;每次投递唯一，用于去重&gt;
+  X-Alarm-Signature: sha256=&lt;HMAC-SHA256(body, API_KEY)&gt;
+
+Body:
+{
+  "event": "alarm.fired",
+  "alarm_id": "a_1f3c9a2b7d8e4f60",
+  "tenant": "demo",
+  "text": "明天早上8点叫我起床",
+  "alarm": { "timestamp": 1760563200, "time": "08:00", "recurrence": "none",
+             "timezone": "Asia/Shanghai", "label": "起床", "enabled": true },
+  "fired_at": "2026-10-10T00:00:00.000Z",
+  "request_id": "req_01HX..."
+}</pre>
+    <div class="lbl">验签（Node 示例）</div>
+    <pre>const crypto = require('crypto');
+function verify(rawBody, signatureHeader, apiKey){
+  const expected = 'sha256=' + crypto.createHmac('sha256', apiKey)
+                      .update(rawBody).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signatureHeader));
+}</pre>
+    <div class="note">投递失败（非 2xx）会按 1s / 2s / 4s 退避重试共 3 次；仍失败则记入日志（不阻塞调度）。建议在接收端用 <code>X-Alarm-Delivery-Id</code> 做幂等。</div>
+  </div>
+
+  <h3>4.3 用量统计</h3>
+  <div class="card">
+    <span class="method m-get">GET</span><span class="path">/v1/usage</span>
+    <pre>curl https://your-domain.example.com/v1/usage -H "Authorization: Bearer &lt;KEY&gt;"</pre>
+    <div class="lbl">响应 200</div>
+    <pre>{
+  "tenant": "demo",
+  "usage": {
+    "parse_count": 12, "alarm_create": 3, "alarm_update": 1,
+    "alarm_delete": 0, "fire_count": 2,
+    "since": "2026-10-09T17:00:00.000Z"
+  },
+  "request_id": "req_01HX..."
+}</pre>
+    <div class="note">计数字段：<code>parse_count</code> 解析调用、<code>alarm_create/update/delete</code> 闹钟增删改、<code>fire_count</code> Webhook 触发投递次数。为后续按量计费预留。</div>
+  </div>
+
+  <h3>4.4 密钥自助管理（开发者门户同款接口）</h3>
+  <p class="lead">密钥按租户隔离，只能查看/管理自己租户的密钥。创建密钥时可指定套餐（<code>free/pro/enterprise</code>），决定默认限额与月度解析配额。</p>
+  <div class="card">
+    <span class="method m-get">GET</span><span class="path">/v1/keys</span>
+    <span class="method m-post">POST</span><span class="path">/v1/keys</span>
+    <span class="method m-post">POST</span><span class="path">/v1/keys/:key/disable|enable</span>
+    <div class="lbl">创建专业版密钥</div>
+    <pre>curl -X POST https://your-domain.example.com/v1/keys \
+  -H "Authorization: Bearer &lt;KEY&gt;" -H "Content-Type: application/json" \
+  -d '{"label":"生产环境","plan":"pro"}'
+# → 201：返回完整 key（仅此刻返回一次，请保存）
+#   {"key":"sk_live_...","tenant":"demo","label":"生产环境",
+#    "enabled":true,"rate_limit":600,"plan":"pro","created_at":"...","request_id":"..."}</pre>
+    <div class="lbl">列出本租户密钥（Key 已脱敏）</div>
+    <pre>curl https://your-domain.example.com/v1/keys -H "Authorization: Bearer &lt;KEY&gt;"
+# → {"count":2,"keys":[{"key":"sk_live_abc1…2345","tenant":"demo",
+#    "label":"生产环境","enabled":true,"rate_limit":600,"plan":"pro","created_at":"..."}],
+#    "request_id":"..."}</pre>
+    <div class="lbl">禁用 / 启用</div>
+    <pre>curl -X POST https://your-domain.example.com/v1/keys/&lt;完整KEY&gt;/disable \
+  -H "Authorization: Bearer &lt;KEY&gt;"
+# → {"ok":true,"key":"sk_live_...","enabled":false,"request_id":"..."}</pre>
+    <div class="note">套餐与配额：<code>free</code>=60 次/分 &amp; 5k 解析/月；<code>pro</code>=600/分 &amp; 100k/月；<code>enterprise</code>=6000/分 &amp; 不限。<code>/v1/parse</code> 超出月度配额返回 <span class="bad">402</span>。</div>
+  </div>
+
+  <h2>6. 开发者门户（Web 控制台）</h2>
+  <div class="card">
+    <p class="lead">平台附带开箱即用的开发者控制台，地址：<code>/portal</code>（与本 API 同源）。功能：</p>
+    <ul>
+      <li><b>密钥管理：</b>可视化列出/创建/启用/禁用 Key（创建时选套餐）。</li>
+      <li><b>Webhook 配置：</b>填写回调 URL，一键保存并连通性校验。</li>
+      <li><b>用量看板：</b>实时展示套餐、剩余配额与各指标条形图（解析/创建/更新/删除/触发）。</li>
+    </ul>
+    <div class="note">门户只是 <code>/v1/*</code> 接口的可视化封装，所有能力均以 API 形式对外开放，便于你嵌入自己的后台。</div>
+  </div>
+
+  <h2>7. 错误码</h2>
+  <table>
+    <tr><th>HTTP</th><th>code</th><th>含义</th></tr>
+    <tr><td>400</td><td>bad_request</td><td>参数错误（缺 text / 超 200 字 / 闹钟缺时间字段 / webhook_url 非法或协议不符）</td></tr>
+    <tr><td>401</td><td>missing_api_key / invalid_api_key</td><td>缺头或 Key 无效</td></tr>
+    <tr><td>403</td><td>key_disabled</td><td>Key 已禁用</td></tr>
+    <tr><td>402</td><td>quota_exceeded</td><td>本月解析配额（按套餐）已用尽，需升级或等下个计费周期</td></tr>
+    <tr><td>404</td><td>not_found</td><td>接口不存在 / 闹钟不存在或不属于当前租户 / 密钥不属于当前租户</td></tr>
+    <tr><td>405</td><td>method_not_allowed</td><td>方法不被允许</td></tr>
+    <tr><td>422</td><td>（解析类）</td><td>自然语言无法确定时间，需澄清</td></tr>
+    <tr><td>429</td><td>rate_limited</td><td>限流，含 Retry-After</td></tr>
+    <tr><td>500</td><td>internal</td><td>服务端异常</td></tr>
+  </table>
+
+  <h2>8. 把契约渲染成交互文档</h2>
+  <div class="note">
+    <code>openapi.yaml</code> 已是完整的 OpenAPI 3 规范（含全部端点、schema、示例）。导入
+    <a href="https://editor.swagger.io" target="_blank">editor.swagger.io</a> 或本地
+    <code>npx @redocly/cli serve openapi.yaml</code> 即可生成可调试的交互式 API 文档与 SDK。
+  </div>
+
+  <p class="lead" style="margin-top:40px">本参考覆盖 v1.0.0 全部对外开放接口：<b>解析（/v1/parse）、健康检查（/v1/health）、密钥自助管理（/v1/keys）、托管闹钟 CRUD（/v1/alarms）、Webhook 配置与用量（/v1/webhook、/v1/usage）</b>，并附开发者门户 <code>/portal</code>。闹钟到点后通过 Webhook 投递 <code>alarm.fired</code> 事件，无需你自建存储即可接入"定时触发业务"。</p>
+
+</div>
+</body>
+</html>

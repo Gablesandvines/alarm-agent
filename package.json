@@ -1,0 +1,14 @@
+{
+  "name": "alarm-agent",
+  "version": "1.0.0",
+  "description": "闹钟 Agent — 中文自然语言定时能力平台：解析 API + 多租户托管闹钟 + Webhook + 开发者门户（最小服务端）",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test_openapi.js",
+    "keys": "node manage_keys.js"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}

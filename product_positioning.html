@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>闹钟 Agent · 产品定位决策文档 v1.0</title>
+<style>
+  :root{
+    --bg:#fff; --page:#f6f7f9; --sub:#f0f1f4; --card:#fff;
+    --t1:#1d1f23; --t2:#5b6068; --t3:#8a9099;
+    --line:#e3e5ea; --brand:#534ab7; --teal:#0f6e56; --blue:#185fa5; --amber:#854f0b;
+    --ok:#0f6e56; --warn:#854f0b; --bad:#a32d2d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--t1);font:14px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:920px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:24px;margin:0 0 4px;font-weight:700}
+  h2{font-size:18px;margin:38px 0 12px;padding-left:10px;border-left:4px solid var(--brand);font-weight:700}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--t1);font-weight:600}
+  p{margin:8px 0;color:var(--t2)}
+  small{color:var(--t3)}
+  .meta{color:var(--t3);font-size:13px;margin-bottom:24px}
+  .lead{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:18px 0}
+  .lead b{color:var(--t1)}
+  .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;vertical-align:middle}
+  .p-brand{background:#eeeafc;color:var(--brand)}
+  .p-teal{background:#e1f5ee;color:var(--teal)}
+  .p-blue{background:#e6f1fb;color:var(--blue)}
+  .p-amber{background:#faefda;color:var(--amber)}
+  .p-ok{background:#eaf3de;color:var(--ok)}
+  .p-warn{background:#faefda;color:var(--warn)}
+  .p-bad{background:#fcebeb;color:var(--bad)}
+  table{border-collapse:collapse;width:100%;margin:14px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{border-bottom:1px solid var(--line);padding:11px 13px;text-align:left;vertical-align:top;font-size:13px}
+  th{background:var(--sub);color:var(--t1);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  td:first-child{font-weight:600;color:var(--t1);white-space:nowrap}
+  .colA{background:#f7fbff}
+  .colB{background:#f4fbf8}
+  .colC{background:#fffaf0}
+  .card{border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;background:var(--card)}
+  .card.a{border-top:3px solid var(--blue)}
+  .card.b{border-top:3px solid var(--teal)}
+  .card.c{border-top:3px solid var(--amber)}
+  .card h3{margin-top:0}
+  .kv{display:flex;gap:8px;margin:6px 0}
+  .kv .k{color:var(--t3);min-width:78px;font-size:13px}
+  .kv .v{color:var(--t2);flex:1}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  @media(max-width:720px){.grid{grid-template-columns:1fr}}
+  .route{border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;background:var(--card)}
+  .route.rec{border:2px solid var(--brand)}
+  .route h3{margin-top:0}
+  ul{margin:6px 0;padding-left:20px}
+  li{margin:5px 0;color:var(--t2)}
+  .tag{font-size:12px;color:var(--t3);border:1px dashed var(--line);border-radius:8px;padding:2px 8px;display:inline-block;margin:2px 4px 2px 0}
+  .foot{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--t3);font-size:12px}
+  code{background:var(--sub);padding:1px 6px;border-radius:5px;font-size:12px;color:var(--t1)}
+  .callout{background:#fbf8ef;border:1px solid #f0e3c2;border-radius:10px;padding:12px 16px;margin:14px 0;color:var(--warn)}
+  .doclist{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:10px 0;font-size:13px;color:var(--t2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>闹钟 Agent · 产品定位决策文档</h1>
+  <div class="meta">版本 v1.0（决策稿）｜ 日期 2026-10-12 ｜ 目的：在三种产品形态中选定主角，消除定位漂移</div>
+
+  <div class="lead">
+    <b>一句话结论：</b>你不是"没东西"，而是<b>同一份引擎被同时往三个方向拉</b>——消费 App、开发者 API、嵌入技能。
+    真正值钱且难复制的资产是 <code>nlu.js</code>（中文自然语言→结构化时间，56 例回归锁死、规则+LLM 兜底、会反问）。
+    本决策文档的目标，是帮你在 A / B / C 中选一个<b>主角</b>，其余降级为<b>衍生物</b>。
+  </div>
+
+  <h2>1. 问题陈述：为什么"没想好怎么体现"</h2>
+  <p>回看已落地的产物，项目实际发出了三种产品信号，而非一个统一形态：</p>
+  <div class="grid">
+    <div class="card a">
+      <h3>A 消费级工具（C 端）</h3>
+      <p>最初的「中文闹钟 Agent Web 应用」，<code>index.html</code> PWA + 闹钟列表 + 澄清对话 + Web Push。刚又问了 iOS App。</p>
+    </div>
+    <div class="card b">
+      <h3>B 开发者 API（B 端）</h3>
+      <p>后来加的开放 API：<code>/v1/parse</code> + API Key + 限流 + CORS + OpenAPI + 密钥管理 CLI（Phase 1 已完成）。</p>
+    </div>
+    <div class="card c">
+      <h3>C 嵌入技能</h3>
+      <p>你并行做的「旅游规划 Agent」本可把"到点提醒"当作子能力调用——形态上是内部工具，不单独见用户。</p>
+    </div>
+  </div>
+  <div class="callout">
+    <b>定位漂移的实锤：</b>早期需求文档把项目定位为「纯工具、无服务端、低成本」。但开放 API 已经引入服务端 + 密钥体系，
+    项目在悄悄往"平台"方向漂。这份文档首先要回答：<b>到底是守住"纯工具"，还是拥抱"服务端平台"？</b>
+  </div>
+
+  <h2>2. 资产盘点：护城河到底是什么</h2>
+  <p>以下每一项都"贵"且"难抄"，是决策的依据：</p>
+  <ul>
+    <li><b>中文时间解析引擎 <code>nlu.js</code></b>：中文数字 / 相对 / 绝对日期 / 星期（含"下周6"数字星期）/ 时段词 / 每 X 天 / 隔周 / 节假日（春节端午中秋）/ 提前提醒 / <b>多轮澄清</b>。</li>
+    <li><b>56 例回归测试</b>：相对时间校验、不随时间过期，已多次堵住"语义边界"类 bug。</li>
+    <li><b>规则优先 + LLM 兜底</b>：置信度≥0.85 零成本直接返回，长尾口语才走 LLM——成本结构天然优于纯 LLM 方案。</li>
+    <li><b>双形态已验证</b>：同一引擎既跑在浏览器（PWA），又跑在 Node（API），复用度 90%+。</li>
+  </ul>
+  <p><small>而 UI、推送、API 外壳都是 commoditized（大厂/开源可瞬间复制）。<b>护城河 = 引擎的语料积累与确定性</b>，不是外壳。</small></p>
+
+  <h2>3. 三种产品形态详解</h2>
+
+  <div class="card a">
+    <h3><span class="pill p-blue">A</span> 消费级 App（C 端）</h3>
+    <div class="kv"><span class="k">目标用户</span><span class="v">中文手机用户，想要"说一句话就设好提醒"的体验。</span></div>
+    <div class="kv"><span class="k">形态</span><span class="v">iOS / Android 原生壳（Capacitor 封装现有 Web 资产，复用 90% 代码）；单机版用本地通知，云端版加 APNs。</span></div>
+    <div class="kv"><span class="k">核心卖点</span><span class="v">「会对话的闹钟」——模糊输入反问并记住上下文（澄清对话）。</span></div>
+    <div class="kv"><span class="k">关键约束</span><span class="v">iOS 静音不响（需重要警报/AlarmKit/Critical Alert）、64 个 pending 通知限额、App Store 审核、必须 Mac+iPhone 真机。</span></div>
+    <div class="kv"><span class="k">已实现</span><span class="v">Web 端 MVP、澄清 UI、iOS 落地方案文档。</span></div>
+    <div class="kv"><span class="k">待做</span><span class="v">Capacitor 封装、本地通知桥接、64 限额滑动窗口、真机上架（2.5–3 周）。</span></div>
+    <div><span class="tag">贴合原"纯工具"定位（单机版可零服务端）</span><span class="tag">市场拥挤</span><span class="tag">变现难</span></div>
+  </div>
+
+  <div class="card b">
+    <h3><span class="pill p-teal">B</span> 开发者 API（B 端）</h3>
+    <div class="kv"><span class="k">目标用户</span><span class="v">做日程 / 提醒 / 日历 / 助理类应用的开发者，不想自己造时间解析。</span></div>
+    <div class="kv"><span class="k">形态</span><span class="v"><code>/v1/parse</code> + <code>clarification</code> JSON（让别的 Agent 也能多轮追问）+ 按 key 计费 + 文档/SDK。</span></div>
+    <div class="kv"><span class="k">核心卖点</span><span class="v">「agentic 时间解析」——别人用 LLM function calling 按 token 花钱，你规则引擎<b>零成本、确定、可离线</b>。</span></div>
+    <div class="kv"><span class="k">关键约束</span><span class="v">需服务端（与"纯工具"原定位冲突）；要运维、限流、监控、密钥管理；面临大模型厂商的潜在替代。</span></div>
+    <div class="kv"><span class="k">已实现</span><span class="v">Phase 1：鉴权 / 限流 / CORS / 标准错误 / OpenAPI / 集成测试 14/14 通过。</span></div>
+    <div class="kv"><span class="k">待做</span><span class="v">Phase 2 闹钟 CRUD + 多租户 DB（SQLite/Postgres，2–3 周）；Phase 3 对外开放 Web Push。</span></div>
+    <div><span class="tag">毛利高</span><span class="tag">维护轻</span><span class="tag">最贴"Agent"品牌</span><span class="tag">需服务端</span></div>
+  </div>
+
+  <div class="card c">
+    <h3><span class="pill p-amber">C</span> 嵌入技能 / 白标</h3>
+    <div class="kv"><span class="k">目标用户</span><span class="v">你自己的其他 Agent（如旅游规划 Agent 的"到点提醒行程"）。</span></div>
+    <div class="kv"><span class="k">形态</span><span class="v">内部工具 / 技能，作为主 Agent 的一个 tool 调用，不单独面对终端用户。</span></div>
+    <div class="kv"><span class="k">核心卖点</span><span class="v">组合拳——丰富主产品的"时间感知"能力。</span></div>
+    <div class="kv"><span class="k">关键约束</span><span class="v">无独立市场与营收；价值是间接的（提升主 Agent 体验）。</span></div>
+    <div class="kv"><span class="k">建议</span><span class="v"><b>不宜单独做</b>，应作为 A 或 B 的衍生物存在。</span></div>
+  </div>
+
+  <h2>4. 六维对比矩阵</h2>
+  <table>
+    <thead>
+      <tr><th>维度</th><th class="colA">A 消费级 App</th><th class="colB">B 开发者 API</th><th class="colC">C 嵌入技能</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>市场空间</td><td class="colA">大但拥挤（系统闹钟/提醒事项/滴答清单/各厂商），低付费意愿</td><td class="colB">小众但真实且增长（AI Agent 爆发→tool 需求），开发者付费意愿高</td><td class="colC">无独立市场，间接价值</td></tr>
+      <tr><td>成本结构</td><td class="colA">高：App 年费、双端开发、设备测试、合规、客服</td><td class="colB">低：服务端+文档+限流，无商店/设备碎片化</td><td class="colC">近零增量（复用引擎）</td></tr>
+      <tr><td>营收模型</td><td class="colA">订阅/广告/买断，中国 B2C 低 ARPU</td><td class="colB">按调用计费/包月额度/企业私有部署（高意愿）</td><td class="colC">间接（提升主产品价值）</td></tr>
+      <tr><td>护城河</td><td class="colA"><span class="pill p-bad">弱</span> 易被 OS 厂商复制，UX 与 NL 单独不耐久</td><td class="colB"><span class="pill p-ok">中强</span> 引擎语料积累 + 确定性/成本优势 + 集成锁定</td><td class="colC">无（能力本身）</td></tr>
+      <tr><td>上市时间</td><td class="colA">慢（2.5–3 周脚手架+真机+审核，需 Mac）</td><td class="colB">快（Phase 1 已就绪，Phase 2 约 2–3 周）</td><td class="colC">即时</td></tr>
+      <tr><td>核心风险</td><td class="colA">留存/付费低、Apple 通知限制、上架被拒</td><td class="colB">LLM 厂商替代（但成本/确定性可对冲）</td><td class="colC">低</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. 核心张力：原定位 vs 现实漂移</h2>
+  <div class="doclist">
+    <b>原定位（需求文档 v0.1）：</b>纯工具、无服务端、低成本 → 这条线索其实<b>指向 A 单机版</b>（本地通知，零后端，最贴合"低成本"）。<br/>
+    <b>现实漂移：</b>开放 API 已引入服务端+密钥 → 这条线索<b>指向 B</b>。<br/>
+    <b>决策含义：</b>若你想<b>守住最初意愿</b>，应选 A 单机版（可完全无服务端）；若你认可"服务化"价值，选 B。两者不可在叙事上含糊并存。
+  </div>
+
+  <h2>6. "Agent" 品牌如何立住</h2>
+  <p>立脚点是<b>澄清对话</b>（模糊时反问并记住上下文再解析），它在两种形态里语义不同：</p>
+  <ul>
+    <li><b>在 A 里</b>：是"体验亮点"——用户说"待会提醒我喝水"，App 反问"30 分钟后？"，补全后解析。</li>
+    <li><b>在 B 里</b>：是"契约"——<code>clarification</code> JSON 让<b>别人的 Agent</b> 也能多轮追问，天然 agentic，最贴品牌。</li>
+  </ul>
+  <p>无论选哪条，把"会反问"作为核心叙事，就能区别于普通闹钟/普通解析库。</p>
+
+  <h2>7. 推荐组合策略（两条候选路线）</h2>
+
+  <div class="route rec">
+    <h3>路线 ①（推荐）：B 为主角，A 作参考实现</h3>
+    <p><b>逻辑：</b>最大化护城河（引擎）+ 最高毛利 + 最快上市 + 最贴"Agent"。把 A 做成<b>官方参考 App / Demo</b>（证明引擎在真实消费体验里成立，可当获客/ Loss-leader），但不作为营收主力。</p>
+    <ul>
+      <li>立即：Phase 2（闹钟 CRUD + 多租户 DB）+ 计费 + 开发者文档站。</li>
+      <li>并行：用 Capacitor 把现有 Web 包成参考 App（满足你的 iOS 兴趣，且零额外引擎成本）。</li>
+      <li>C 自动成立：旅游规划 Agent 直接 <code>/v1/parse</code> 调用。</li>
+    </ul>
+  </div>
+
+  <div class="route">
+    <h3>路线 ②：A 单机版为主角，B 暂缓</h3>
+    <p><b>逻辑：</b>若你的真实目标是"做一个用户真正在用的好闹钟"、且想<b>守住'纯工具低成本'原定位</b>。选 Capacitor + 本地通知（零服务端），不做后端，不做 API 商业化。</p>
+    <ul>
+      <li>立即：Capacitor 封装 + 64 限额滑动窗口 + 通知策略（重要警报起步，预留 AlarmKit）。</li>
+      <li>B 仅保留已完成的 Phase 1 作为"免费彩蛋"，不投入商业化。</li>
+      <li>风险：市场拥挤、变现难，但成本也最低、最贴合初心。</li>
+    </ul>
+  </div>
+
+  <h2>8. 决策 Checklist（帮你拍板）</h2>
+  <ul>
+    <li>你的目标是<b>用户体感</b>还是<b>可规模化生意</b>？（体感→A；生意→B）</li>
+    <li>是否接受"服务端 + 密钥"体系？（接受→B；拒绝、想纯工具→A 单机版）</li>
+    <li>手上有 <b>Mac + iPhone</b> 真机吗？（做 A 的硬门槛；B 不需要）</li>
+    <li>上架<b>中国区</b>还是<b>全球</b>？（影响合规与隐私政策语言）</li>
+    <li>通知策略选 <b>重要警报 / AlarmKit / Critical Alert</b> 哪种？（决定 A 的"静音也响"能力）</li>
+  </ul>
+
+  <h2>9. 下一步动作（无论选哪条）</h2>
+  <ul>
+    <li><b>对齐文档：</b>把选定主角写回 <code>alarm_requirements.html</code>，删掉"未定"状态。</li>
+    <li><b>护城河加固：</b>继续给 <code>nlu.js</code> 补语料（方言、相对模糊词、更多节假日），维持 56+ 回归。</li>
+    <li><b>真机验证：</b>用 <code>deploy/</code> 在你自己的域名 + 手机跑 Web Push 实测（当前仅服务端侧验证通过）。</li>
+  </ul>
+
+  <div class="foot">
+    附：相关产物同目录 —— <code>alarm_requirements.html</code>（需求/路线图）｜ <code>api_open_design.html</code>（开放 API 设计）｜
+    <code>openapi.yaml</code>（契约）｜ <code>ios_app_plan.html</code>（iOS 落地方案）｜ <code>nlu.js</code>（引擎）｜
+    <code>index.html</code>（Web 应用）｜ <code>server.js</code>（服务端）。
+  </div>
+
+</div>
+</body>
+</html>

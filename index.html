@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#3b6cf6">
+<link rel="manifest" href="manifest.webmanifest">
+<title>闹钟 Agent · MVP</title>
+<style>
+  :root{
+    --bg:#f4f6fb; --card:#fff; --ink:#1f2533; --sub:#5b6472;
+    --brand:#3b6cf6; --brand2:#22a17a; --line:#e6e9ef;
+    --bad:#d9534f; --good:#2f9e6e; --chip:#eef2ff; --warn:#e0883b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:840px;margin:0 auto;padding:24px 16px 70px}
+  .head{text-align:center;margin-bottom:16px}
+  .head h1{font-size:22px;margin:0 0 4px}
+  .head p{color:var(--sub);margin:0;font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 3px rgba(20,30,60,.04)}
+  .label{font-size:13px;color:var(--sub);font-weight:600;margin-bottom:8px}
+  textarea{width:100%;min-height:60px;border:1px solid var(--line);border-radius:10px;padding:11px 13px;font-size:15px;font-family:inherit;resize:vertical;outline:none}
+  textarea:focus{border-color:var(--brand)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  button{background:var(--brand);color:#fff;border:none;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer}
+  button.ghost{background:#eef2ff;color:var(--brand)}
+  button.small{padding:6px 12px;font-size:13px}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .examples{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+  .examples span{background:var(--chip);color:#3446a0;border:1px solid #dbe4ff;padding:4px 10px;border-radius:999px;font-size:12.5px;cursor:pointer}
+  .examples span:hover{background:#e2e9ff}
+  pre{background:#0f1729;color:#e6edf7;padding:14px 15px;border-radius:10px;overflow:auto;font-size:12.5px;line-height:1.5;font-family:"SFMono-Regular",Consolas,Menlo,monospace;margin:0}
+  .summary{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .summary .b{background:#f3f7ff;border:1px solid #dbe7ff;border-radius:10px;padding:8px 10px;flex:1;min-width:110px}
+  .summary .b .k{font-size:11px;color:var(--sub)}
+  .summary .b .v{font-size:15px;font-weight:700;color:var(--brand)}
+  .summary .b .v.ok{color:var(--good)}
+  .amb{background:#fff8ec;border:1px solid #ffe2b0;border-radius:8px;padding:8px 11px;color:#7a5a1f;font-size:13px;margin-top:8px}
+  .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600}
+  .pill.ok{background:#eafaf1;color:var(--good)}
+  .pill.no{background:#fdeaea;color:var(--bad)}
+  .pill.rec{background:#eef2ff;color:#3446a0}
+  .item{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px dashed var(--line)}
+  .item:last-child{border-bottom:none}
+  .item .t{font-size:20px;font-weight:800;color:var(--ink);min-width:64px;text-align:center}
+  .item .meta{flex:1;min-width:0}
+  .item .meta .lab{font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .meta .sub{font-size:12px;color:var(--sub)}
+  .item.off{opacity:.5}
+  .sw{position:relative;width:42px;height:24px;background:#cfd6e4;border-radius:999px;cursor:pointer;transition:.2s;flex:0 0 auto}
+  .sw.on{background:var(--good)}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.2s}
+  .sw.on::after{left:20px}
+  .del{background:transparent;border:1px solid #f0caca;color:var(--bad);border-radius:8px;padding:5px 10px;font-size:13px;cursor:pointer;flex:0 0 auto}
+  .perm{display:flex;align-items:center;gap:10px;font-size:13.5px}
+  .perm .st{font-weight:600}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#1f2533;color:#fff;padding:11px 18px;border-radius:12px;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:.25s;z-index:50}
+  .toast.show{opacity:1;bottom:34px}
+  .ringbox{position:fixed;inset:0;background:rgba(31,37,51,.55);display:none;align-items:center;justify-content:center;z-index:60}
+  .ringbox.show{display:flex}
+  .ring{background:#fff;border-radius:18px;padding:26px 30px;text-align:center;width:300px;box-shadow:0 12px 40px rgba(0,0,0,.3)}
+  .ring .big{font-size:30px;font-weight:800;color:var(--brand)}
+  .ring .lab{margin:8px 0 18px;font-size:16px}
+  .ring button{width:48%;margin:0 1%}
+  .foot{color:var(--sub);font-size:12px;text-align:center;margin-top:8px;line-height:1.7}
+  .pending{background:#eef4ff;border:1px solid #cfe0ff;border-radius:10px;padding:9px 12px;font-size:13px;color:#31488f;margin-top:10px;display:flex;align-items:center;gap:8px}
+  .pending .x{margin-left:auto;color:#7d93c8;cursor:pointer;font-size:12px;border:1px solid #cfe0ff;border-radius:8px;padding:2px 8px}
+  .clarify{background:#fff8ec;border:1px solid #ffe2b0;border-radius:10px;padding:11px 13px;margin-top:10px}
+  .clarify .q{font-size:13.5px;color:#7a5a1f;margin-bottom:8px}
+  .clarify .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .clarify .sug{background:#fff;border:1px solid #ffd79a;color:#9a6a17;padding:5px 12px;border-radius:999px;font-size:13px;cursor:pointer}
+  .clarify .sug:hover{background:#fff3e0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <h1>⏰ 闹钟 Agent · MVP</h1>
+    <p>一句话设置闹钟（口语 → JSON → 按时提醒）。本地优先，可选云端推送（关浏览器也响）。</p>
+  </div>
+
+  <div class="card">
+    <div class="label">自然语言输入</div>
+    <textarea id="input" placeholder="例如：明天早上8点叫我起床">明天早上8点叫我起床</textarea>
+    <div class="row">
+      <button id="parse">解析</button>
+      <button class="ghost" id="clear">清空</button>
+    </div>
+    <div class="examples" id="examples">
+      <span>明天早上8点叫我起床</span>
+      <span>30分钟后提醒我开会</span>
+      <span>每天晚上10点睡觉</span>
+      <span>下周一9点半开会</span>
+      <span>后天中午12点取快递</span>
+      <span>两小时后看锅</span>
+      <span>每周三下午3点健身</span>
+      <span>待会提醒我喝水</span>
+    </div>
+    <div class="pending" id="pendingBanner" style="display:none">
+      <span id="pendingText"></span>
+      <span class="x" id="pendingCancel">取消追问</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">解析结果（JSON）</div>
+    <pre id="json">// 点击「解析」查看结果</pre>
+    <div class="summary" id="summary"></div>
+    <div id="amb"></div>
+    <div class="clarify" id="clarify" style="display:none"></div>
+    <div class="row" id="saveRow" style="display:none">
+      <button id="save">保存闹钟</button>
+      <span id="saveHint" style="font-size:12.5px;color:var(--sub)"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">通知权限</div>
+    <div class="perm">
+      <span class="st" id="permText">未授权</span>
+      <button class="small ghost" id="permBtn">开启通知</button>
+      <span style="font-size:12px;color:var(--sub)">关闭页面后仍提醒需安装为 App 并授权</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">云端推送（关浏览器也响 · 需本地服务端）</div>
+    <div class="perm">
+      <span class="st" id="pushText">检测中…</span>
+      <button class="small ghost" id="pushBtn">开启云端推送</button>
+      <span style="font-size:12px;color:var(--sub)">由 <code>node server.js</code> 托管本页时可用；否则自动降级为本地提醒</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">我的闹钟（<span id="cnt">0</span>）</div>
+    <div id="list"><div class="empty">还没有闹钟，先解析一句话试试。</div></div>
+  </div>
+
+  <div class="foot">
+    解析引擎 nlu.js（含 timestamp）｜本地存储 localStorage｜提醒=通知+铃声｜PWA 可安装。<br>
+    可靠性：开启「云端推送」后由 node server.js 通过 Web Push 在浏览器关闭时也能提醒（需 localhost/HTTPS 托管）；未开启时本地调度兜底（页面存活内有效）。
+  </div>
+</div>
+
+<div class="ringbox" id="ringbox">
+  <div class="ring">
+    <div class="big" id="ringTime">08:00</div>
+    <div class="lab" id="ringLab">闹钟</div>
+    <button id="ringStop">关闭</button>
+    <button class="ghost" id="ringSnooze">再睡9分钟</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================
+ * nlu.js — 闹钟 Agent 自然语言时间解析引擎（规则 + 词典）
+ * 纯前端、零依赖、可离线运行。
+ * 暴露全局函数 parseAlarm(text) -> JSON
+ * ============================================================ */
+(function (global) {
+  'use strict';
+
+  function cnNum(s) {
+    if (s === undefined || s === null) return null;
+    s = String(s);
+    if (/^\d+$/.test(s)) return parseInt(s, 10);
+    const d = { '零': 0, '一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
+    if (s === '十') return 10;
+    if (s.includes('十')) {
+      const [a, b] = s.split('十');
+      const tens = a ? (d[a] || 0) * 10 : 10;
+      const ones = b ? (d[b] || 0) : 0;
+      return tens + ones;
+    }
+    return (d[s] !== undefined) ? d[s] : null;
+  }
+
+  const WEEK = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 0, '天': 0, '七': 0 };
+  // 星期字符 → 数字（0=周日..6=周六），同时支持数字写法（0/7=周日，1..6）
+  function weekNum(c) {
+    if (WEEK[c] !== undefined) return WEEK[c];
+    const d = parseInt(c, 10);
+    if (!isNaN(d)) return (d === 0 || d === 7) ? 0 : d;
+    return null;
+  }
+
+  // 绝对日历日期解析：支持 2026年10月10日 / 2026-10-10 / 10月10日 / 10号 / 8日 等
+  // 返回 { year?, month?, day, consumed }，未提供的字段用 undefined 表示（由组合逻辑按上下文补全年/月）
+  function parseAbsDate(text) {
+    let m;
+    // ISO：YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+    if ((m = text.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/)))
+      return { year: +m[1], month: +m[2], day: +m[3], consumed: m[0] };
+    // 中文完整：YYYY年MM月DD日/号（日/号可选）
+    if ((m = text.match(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/)))
+      return { year: +m[1], month: +m[2], day: +m[3], consumed: m[0] };
+    // 中文月-日：MM月DD日/号（日/号必须）
+    if ((m = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]/)))
+      return { month: +m[1], day: +m[2], consumed: m[0] };
+    // 中文日-号：DD日/号
+    if ((m = text.match(/(\d{1,2})\s*[日号]/)))
+      return { day: +m[1], consumed: m[0] };
+    return null;
+  }
+
+  // 节假日识别：返回与 absDate 同结构的 { year?, month, day, consumed }
+  // 阳历节日为固定月日（year 留空→按"过期顺延"）；农历节日给近年份的精确公历日期（需逐年维护或可接转换库）
+  const HOLIDAY_SOLAR = {
+    '元旦': [1, 1], '元旦节': [1, 1], '劳动节': [5, 1], '劳动': [5, 1], '五一': [5, 1],
+    '国庆': [10, 1], '国庆节': [10, 1], '儿童节': [6, 1], '妇女节': [3, 8], '青年节': [5, 4],
+    '教师节': [9, 10], '建军节': [8, 1], '植树节': [3, 12], '清明节': [4, 5], '圣诞': [12, 25], '圣诞节': [12, 25]
+  };
+  const HOLIDAY_LUNAR = {
+    '春节': { '2026': [2, 17], '2027': [2, 6] },
+    '元宵': { '2026': [3, 3], '2027': [2, 21] },
+    '端午': { '2026': [6, 19], '2027': [6, 9] },
+    '七夕': { '2026': [8, 19], '2027': [8, 8] },
+    '中秋': { '2026': [9, 25], '2027': [9, 15] }, '中秋节': { '2026': [9, 25], '2027': [9, 15] },
+    '重阳': { '2026': [10, 18], '2027': [10, 8] }
+  };
+  function parseHoliday(text, now) {
+    for (const name in HOLIDAY_SOLAR) {
+      if (text.includes(name)) return { month: HOLIDAY_SOLAR[name][0], day: HOLIDAY_SOLAR[name][1], consumed: name };
+    }
+    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    for (const name in HOLIDAY_LUNAR) {
+      if (text.includes(name)) {
+        const map = HOLIDAY_LUNAR[name];
+        const cands = [now.getFullYear(), now.getFullYear() + 1]
+          .filter(y => map[String(y)])
+          .map(y => ({ y: +y, md: map[String(y)] }));
+        cands.sort((a, b) => new Date(a.y, a.md[0] - 1, a.md[1]) - new Date(b.y, b.md[0] - 1, b.md[1]));
+        const chosen = cands.find(c => new Date(c.y, c.md[0] - 1, c.md[1]) >= today0) || cands[0];
+        if (chosen) return { year: chosen.y, month: chosen.md[0], day: chosen.md[1], consumed: name };
+      }
+    }
+    return null;
+  }
+
+  function parseAlarm(text, opts) {
+    text = (text || '').trim();
+    const consumed = [];
+    let confidence = 0.5;
+    let needsClarification = false;
+    const ambiguities = [];
+
+    // ---- 1. 重复规则 ----
+    let recurrence = 'none';
+    let m;
+    if ((m = text.match(/(每天|每日|每一天)/))) { recurrence = 'daily'; consumed.push(m[0]); }
+    else if ((m = text.match(/(工作日|周一到周五|星期一到星期五|礼拜一到礼拜五|周一到周五四)/))) { recurrence = 'weekdays'; consumed.push(m[0]); }
+    else if ((m = text.match(/(周末|周六周日|星期六星期天|周六日)/))) { recurrence = 'weekend'; consumed.push(m[0]); }
+    else if ((m = text.match(/每([零一二两三四五六七八九十百\d]+)天/))) { recurrence = 'every:' + cnNum(m[1]); consumed.push(m[0]); }
+    else if ((m = text.match(/(隔|双)(周|星期|礼拜|个)([一二三四五六日天七\d])/))) { recurrence = 'biweekly:' + weekNum(m[3]); consumed.push(m[0]); }
+    else if ((m = text.match(/(每周|每星期|每个礼拜)([一二三四五六日天七\d])/))) { recurrence = 'weekly:' + weekNum(m[2]); consumed.push(m[0]); }
+
+    // ---- 2. 相对时间（必须带"后/以后"后缀，避免与"提前X分钟"冲突） ----
+    let relMatch = null;
+    const relRe = /(半|一|两|二|三|四|五|六|七|八|九|十|\d+)\s*(秒钟|秒|分钟|分|小时|个?小时|钟头)\s*(后|之后|以后)/;
+    if ((m = text.match(relRe))) {
+      const isHalf = m[1] === '半';
+      const num = isHalf ? 30 : cnNum(m[1]);
+      const unit = isHalf ? '分' : m[2];   // “半小时”=30 分钟，固定为分钟单位
+      if (num !== null) { relMatch = { num, unit }; consumed.push(m[0]); }
+    }
+
+    // ---- 3. 日锚点（含 今/明/后 + 早/晚/午 复合） ----
+    let dayOffset = 0, dayAnchorConsumed = null;
+    if ((m = text.match(/(大后天)/))) { dayOffset = 3; dayAnchorConsumed = m[0]; }
+    else if ((m = text.match(/(后天)/))) { dayOffset = 2; dayAnchorConsumed = m[0]; }
+    else if ((m = text.match(/(明天|明早|明晨|明晚|次日)/))) { dayOffset = 1; dayAnchorConsumed = m[0]; }
+    else if ((m = text.match(/(今天|今日|今早|今晨|今午|今晚|现在|此刻)/))) { dayOffset = 0; dayAnchorConsumed = m[0]; }
+    else if ((m = text.match(/(昨天|昨日)/))) { dayOffset = -1; dayAnchorConsumed = m[0]; }
+    else if ((m = text.match(/(前天)/))) { dayOffset = -2; dayAnchorConsumed = m[0]; }
+    let compoundTod = 0;
+    if (dayAnchorConsumed && /晚/.test(dayAnchorConsumed)) compoundTod = 12;
+    if (dayAnchorConsumed) consumed.push(dayAnchorConsumed);
+
+    // ---- 4. 星期锚点（支持汉字与数字，如 下周6 / 周6 / 星期6 / 礼拜6） ----
+    let weekTarget = null, weekNext = false;
+    if ((m = text.match(/(下个?|下星期|下礼拜|下周)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = true; consumed.push(m[0]); }
+    else if ((m = text.match(/(本个?|本星期|本礼拜|本周)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = false; consumed.push(m[0]); }
+    else if ((m = text.match(/(周|星期|礼拜)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = false; consumed.push(m[0]); }
+
+    // ---- 5. 时段词（校正小时） ----
+    let todAdd = compoundTod, todConsumed = null;
+    if (todAdd === 0) {
+      if ((m = text.match(/(凌晨|拂晓)/))) { todAdd = 0; todConsumed = m[0]; }
+      else if ((m = text.match(/(早上|早晨|上午|清早)/))) { todAdd = 0; todConsumed = m[0]; }
+      else if ((m = text.match(/(中午|正午)/))) { todAdd = 0; todConsumed = m[0]; }
+      else if ((m = text.match(/(下午|傍晚|黄昏)/))) { todAdd = 12; todConsumed = m[0]; }
+      else if ((m = text.match(/(晚上|夜里|夜晚|深夜)/))) { todAdd = 12; todConsumed = m[0]; }
+      else if ((m = text.match(/(晚|夜)/))) { todAdd = 12; todConsumed = m[0]; }
+      if (todConsumed) consumed.push(todConsumed);
+    }
+
+    // ---- 6. 时刻解析 ----
+    let hour = null, minute = 0, timeConsumed = null;
+    if ((m = text.match(/(\d{1,2})[:：](\d{1,2})/))) { hour = parseInt(m[1], 10); minute = parseInt(m[2], 10); timeConsumed = m[0]; }
+    else if ((m = text.match(/(\d{1,2})\s*点\s*(半|一刻|三刻|(\d{1,2})\s*分?)?/))) {
+      hour = parseInt(m[1], 10);
+      if (m[2] === '半') minute = 30;
+      else if (m[2] === '一刻') minute = 15;
+      else if (m[2] === '三刻') minute = 45;
+      else if (m[3] !== undefined) minute = parseInt(m[3], 10);
+      else minute = 0;
+      timeConsumed = m[0];
+    } else if ((m = text.match(/(十|[零一二两三四五六七八九])\s*点\s*(半|一刻|三刻|([零一二两三四五六七八九])\s*分?)?/))) {
+      hour = cnNum(m[1]);
+      if (m[2] === '半') minute = 30;
+      else if (m[2] === '一刻') minute = 15;
+      else if (m[2] === '三刻') minute = 45;
+      else if (m[3] !== undefined) minute = cnNum(m[3]);
+      else minute = 0;
+      timeConsumed = m[0];
+    }
+    if (timeConsumed) consumed.push(timeConsumed);
+
+    // ---- 2.5 提前提醒（lead） ----
+    let leadMin = null, leadConsumed = null;
+    if ((m = text.match(/提前\s*(半|一|两|二|三|四|五|六|七|八|九|十|\d+)\s*(分钟|分|个?小时|小时|钟头)/))) {
+      const isHalf = m[1] === '半';
+      const n = isHalf ? 30 : cnNum(m[1]);
+      // “半小时”=30 分钟（已是分钟，不再乘 60）；其余：小时单位才乘 60
+      leadMin = isHalf ? 30 : ((m[2].includes('小时') || m[2].includes('钟头')) ? n * 60 : n);
+      leadConsumed = m[0]; consumed.push(m[0]);
+    }
+
+    // ---- 6.5 绝对日期锚点（含节假日） ----
+    // 支持 opts.now 覆盖"当前时间"基准（开放 API 的确定性测试/回放）；默认取真实当前时间
+    const now = (opts && opts.now != null) ? new Date(opts.now) : new Date();
+    const absDate = parseAbsDate(text) || parseHoliday(text, now);
+
+    // ---- 7. 组合时间 ----
+    const tz = 'Asia/Shanghai';
+    let target = null;
+
+    if (absDate) {
+      // 绝对日期优先；未给年份/月份时按"已过期则顺延"补全
+      let year = absDate.year, month = absDate.month, day = absDate.day;
+      const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      if (year === undefined) {
+        year = now.getFullYear();
+        if (new Date(year, month - 1, day) < today0) year += 1;
+      }
+      if (month === undefined) {
+        month = now.getMonth() + 1;
+        if (new Date(year, month - 1, day) < today0) {
+          month += 1;
+          if (month > 12) { month = 1; year += 1; }
+        }
+      }
+      const base = new Date(year, month - 1, day);
+      consumed.push(absDate.consumed);
+      if (hour === null) {
+        target = null;
+      } else {
+        let h = hour;
+        if (todAdd === 12 && h < 12) h += 12;
+        if (hour === 12 && todConsumed && /中午/.test(todConsumed)) h = 12;
+        if (hour === 12 && todConsumed && /(凌晨|早上|上午)/.test(todConsumed)) h = 0;
+        target = new Date(base.getFullYear(), base.getMonth(), base.getDate(), h, minute, 0, 0);
+        confidence = Math.max(confidence, 0.9);
+      }
+    } else if (relMatch) {
+      let ms = 0;
+      const n = relMatch.num;
+      if (relMatch.unit.includes('秒')) ms = n * 1000;
+      else if (relMatch.unit.includes('分')) ms = n * 60 * 1000;
+      else if (relMatch.unit.includes('小时') || relMatch.unit.includes('钟头')) ms = n * 3600 * 1000;
+      target = new Date(now.getTime() + ms);
+      confidence = 0.9;
+    } else {
+      let base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      if (weekTarget !== null) {
+        // 以「周一为一周起点」计算：本周X / 下周X / 裸写X
+        const curMon = (now.getDay() + 6) % 7;          // 周一=0 .. 周日=6
+        const tgtMon = (weekTarget + 6) % 7;
+        const daysToThisWeekX = tgtMon - curMon;        // 到"本周该星期"的天数（可为负）
+        const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const thisWeekX = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysToThisWeekX);
+        let addDays;
+        if (weekNext) {
+          addDays = daysToThisWeekX + 7;                // 「下X」= 下一周的那一天
+        } else if (thisWeekX >= today0) {
+          addDays = daysToThisWeekX;                    // 本周尚未过去 → 本周X
+        } else {
+          addDays = daysToThisWeekX + 7;                // 本周已过 → 顺延到下周
+        }
+        base = new Date(now.getFullYear(), now.getMonth(), now.getDate() + addDays);
+      } else {
+        base = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset);
+      }
+      if (hour === null) {
+        target = null;
+      } else {
+        let h = hour;
+        if (todAdd === 12 && h < 12) h += 12;
+        if (hour === 12 && todConsumed && /中午/.test(todConsumed)) h = 12;
+        if (hour === 12 && todConsumed && /(凌晨|早上|上午)/.test(todConsumed)) h = 0;
+        target = new Date(base.getFullYear(), base.getMonth(), base.getDate(), h, minute, 0, 0);
+        confidence = 0.85;
+        if (todConsumed) confidence += 0.05;
+      }
+    }
+
+    // ---- 7.5 提前提醒：触发时间前移 leadMin 分钟 ----
+    if (leadMin !== null && target) {
+      target = new Date(target.getTime() - leadMin * 60000);
+      confidence = Math.max(confidence, 0.9);
+    }
+
+    // ---- 8. 标签提取 ----
+    let label = text;
+    consumed.forEach(c => { label = label.split(c).join(''); });
+    const stop = /设置|设个|设为|设|一个?|闹钟|提醒我|提醒|叫我|叫醒|叫|帮我|请|需要|想|要|在|的|时间|时候|左右|大概|大约|之后|以后|后|来|去|做|干|一下|点个?|今|明|个/g;
+    label = label.replace(stop, '').replace(/\s+/g, '').trim();
+    // 去除模糊时间词与残留指令词（待会/有空了/我/了…），避免多轮追问累加时污染 label
+    label = label.replace(/(待会|等下|等一下|一会儿|一会|有空|回头|到时候|稍后|稍等|过会儿|随后|之后再说|改天|空了|方便时|我|了)/g, '').trim();
+
+    // ---- 9. 结果组装 ----
+    if (!target) {
+      needsClarification = true;
+      confidence = Math.min(confidence, 0.3);
+      // 识别模糊时间词，生成聚焦追问（而非笼统报错），支撑多轮澄清对话
+      const VAGUE = ['待会', '等下', '等一下', '一会儿', '一会', '有空', '回头', '到时候', '稍后', '稍等', '过会儿', '随后', '之后再说', '改天', '空了', '方便时'];
+      const hit = VAGUE.find(w => text.includes(w));
+      const clarification = hit
+        ? { type: 'time_anchor', question: `「${hit}」是多久后呢？告诉我具体时间，例如：`, suggestions: ['30分钟后', '1小时后', '今晚8点', '明天早上9点'] }
+        : { type: 'unknown', question: '没听清具体时间，补充一下吧，比如「30分钟后」「明天8点」「下周一9点」。', suggestions: ['30分钟后', '1小时后', '明天8点', '下周一9点'] };
+      ambiguities.push(clarification.question);
+      return {
+        success: false, raw: text, alarm: null,
+        confidence: Number(confidence.toFixed(2)),
+        needs_clarification: true, ambiguities, clarification
+      };
+    }
+
+    const pad = n => String(n).padStart(2, '0');
+    const off = -now.getTimezoneOffset();
+    const sign = off >= 0 ? '+' : '-';
+    const oh = pad(Math.floor(Math.abs(off) / 60));
+    const om = pad(Math.abs(off) % 60);
+    const iso = `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(target.getMinutes())}:00${sign}${oh}:${om}`;
+
+    return {
+      success: true, raw: text,
+      alarm: {
+        timestamp: Math.floor(target.getTime() / 1000), // Unix 秒级时间戳（UTC）
+        datetime: iso,
+        date: `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`,
+        time: `${pad(target.getHours())}:${pad(target.getMinutes())}`,
+        recurrence: recurrence,
+        timezone: tz,
+        lead_minutes: leadMin || 0,
+        label: label || '(无备注)',
+        enabled: true
+      },
+      confidence: Number(confidence.toFixed(2)),
+      needs_clarification: false,
+      ambiguities: []
+    };
+  }
+
+  global.parseAlarm = parseAlarm;
+  if (typeof module !== 'undefined' && module.exports) module.exports = { parseAlarm };
+
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+const STORE='alarm_agent_alarms';
+let alarms=[];
+let currentParsed=null; let currentSource='rule';
+let pendingRaw=null, pendingOrigin=null;  // 多轮澄清：累积原始输入与首次意图
+function load(){ try{ alarms=JSON.parse(localStorage.getItem(STORE))||[]; }catch(e){ alarms=[]; } }
+function save(){ localStorage.setItem(STORE, JSON.stringify(alarms)); }
+
+const pad=n=>String(n).padStart(2,'0');
+const WD=['周日','周一','周二','周三','周四','周五','周六'];
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
+
+function computeNextTrigger(a){
+  const now=Date.now();
+  const [hh,mm]=a.time.split(':').map(Number);
+  const at=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate(),hh,mm,0,0).getTime();
+  if(a.recurrence==='none'){ const ts=a.timestamp*1000; return ts>=now?ts:null; }
+  if(a.recurrence==='daily'){ let t=at(new Date()); while(t<now) t+=86400000; return t; }
+  if(a.recurrence==='weekdays'){ let t=at(new Date()),g=0; while(([0,6].includes(new Date(t).getDay())||t<now)&&g<12){t+=86400000;g++;} return t; }
+  if(a.recurrence==='weekend'){ let t=at(new Date()),g=0; while((![0,6].includes(new Date(t).getDay())||t<now)&&g<12){t+=86400000;g++;} return t; }
+  if(a.recurrence.startsWith('weekly:')){ const w=parseInt(a.recurrence.split(':')[1],10); let t=at(new Date()),g=0; while((new Date(t).getDay()!==w||t<now)&&g<12){t+=86400000;g++;} return t; }
+  if(a.recurrence.startsWith('every:')){ const n=parseInt(a.recurrence.split(':')[1],10)||1; let t=a.timestamp*1000,g=0; while(g<500){ const d=new Date(t); const cand=at(new Date(d.getFullYear(),d.getMonth(),d.getDate())); if(cand>=now) return cand; t+=n*86400000; g++; } return null; }
+  if(a.recurrence.startsWith('biweekly:')){ const w=parseInt(a.recurrence.split(':')[1],10); const EPOCH=Date.UTC(2024,0,1); const monOf=ts=>{const x=new Date(ts);const o=(x.getDay()+6)%7;x.setDate(x.getDate()-o);x.setHours(0,0,0,0);return x.getTime();}; let t=at(new Date(a.timestamp*1000)),g=0; while(g<60){const dow=new Date(t).getDay();const wk=Math.round((monOf(t)-monOf(EPOCH))/(7*86400000)); if(dow===w&&t>=now&&wk%2===0) return t; t+=86400000;g++;} return null; }
+  return null;
+}
+function fmtNext(ms){
+  if(ms==null) return '已过期';
+  const d=new Date(ms);
+  const t=`${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const now=new Date();
+  const diff=Math.round((new Date(d.getFullYear(),d.getMonth(),d.getDate())-new Date(now.getFullYear(),now.getMonth(),now.getDate()))/86400000);
+  let p = diff===0?'今天':diff===1?'明天':diff===2?'后天':WD[d.getDay()];
+  if(diff>2) p=`${d.getMonth()+1}月${d.getDate()}日`;
+  return `${p} ${t}`;
+}
+function recLabel(r){
+  const m={'none':'单次','daily':'每天','weekdays':'工作日','weekend':'周末'}[r];
+  if(m) return m;
+  if(r.startsWith('weekly:')) return '每'+WD[parseInt(r.split(':')[1],10)];
+  if(r.startsWith('biweekly:')) return '隔周'+WD[parseInt(r.split(':')[1],10)];
+  if(r.startsWith('every:')) return '每'+r.split(':')[1]+'天';
+  return r;
+}
+
+const $=id=>document.getElementById(id);
+function renderPreview(){
+  if(!currentParsed){ $('json').textContent='// 点击「解析」查看结果'; $('summary').innerHTML=''; $('amb').innerHTML=''; $('clarify').style.display='none'; $('clarify').innerHTML=''; $('saveRow').style.display='none'; return; }
+  const r=currentParsed;
+  $('json').textContent=JSON.stringify(r,null,2);
+  $('summary').innerHTML=''; $('amb').innerHTML=''; $('clarify').style.display='none'; $('clarify').innerHTML='';
+  if(r.success){
+    const a=r.alarm;
+    const srcBadge=`<div class="b"><div class="k">来源</div><div class="v ${currentSource==='llm'?'ok':''}">${currentSource==='llm'?'🌐 LLM 兜底':'本地规则'}</div></div>`;
+    const leadBadge = a.lead_minutes>0 ? `<div class="b"><div class="k">提前</div><div class="v">${a.lead_minutes} 分钟</div></div>` : '';
+    $('summary').innerHTML= srcBadge + `
+      <div class="b"><div class="k">触发时间</div><div class="v ok">${a.date} ${a.time}</div></div>
+      <div class="b"><div class="k">时间戳</div><div class="v">${a.timestamp}</div></div>
+      <div class="b"><div class="k">重复</div><div class="v">${recLabel(a.recurrence)}</div></div>
+      ${leadBadge}
+      <div class="b"><div class="k">备注</div><div class="v">${a.label}</div></div>`;
+    $('saveRow').style.display='flex';
+  } else {
+    const srcBadge=`<div class="b"><div class="k">来源</div><div class="v ${currentSource==='llm'?'ok':''}">${currentSource==='llm'?'🌐 LLM 兜底':'本地规则'}</div></div>`;
+    $('summary').innerHTML= srcBadge + `<div class="b"><div class="k">状态</div><div class="v" style="color:var(--bad)">需澄清</div></div>`;
+    r.ambiguities.forEach(x=>{ const d=document.createElement('div'); d.className='amb'; d.textContent='⚠️ '+x; $('amb').appendChild(d); });
+    // 渲染聚焦追问卡片 + 快捷建议（点击即作为补充输入再次解析）
+    const cl=r.clarification;
+    if(cl && cl.suggestions && cl.suggestions.length){
+      let html=`<div class="q">${cl.question}</div><div class="chips">`;
+      cl.suggestions.forEach(s=>html+=`<span class="sug">${s}</span>`);
+      html+=`</div>`;
+      $('clarify').innerHTML=html; $('clarify').style.display='block';
+      $('clarify').querySelectorAll('.sug').forEach(el=>el.onclick=()=>{ $('input').value=el.textContent; doParse(); });
+    }
+    $('saveRow').style.display='none';
+  }
+}
+function renderList(){
+  const list=$('list'); $('cnt').textContent=alarms.length;
+  if(!alarms.length){ list.innerHTML='<div class="empty">还没有闹钟，先解析一句话试试。</div>'; return; }
+  list.innerHTML='';
+  alarms.forEach(a=>{
+    const nt=computeNextTrigger(a);
+    const div=document.createElement('div');
+    div.className='item'+(a.enabled?'':' off');
+    div.innerHTML=`
+      <div class="t">${a.time}</div>
+      <div class="meta">
+        <div class="lab">${a.label}</div>
+        <div class="sub">${recLabel(a.recurrence)} · 下次：${a.enabled?fmtNext(nt):'已停用'} <span class="pill rec">#${a.timestamp}</span></div>
+      </div>
+      <div class="sw ${a.enabled?'on':''}" data-id="${a.id}"></div>
+      <button class="del" data-id="${a.id}">删除</button>`;
+    list.appendChild(div);
+  });
+  list.querySelectorAll('.sw').forEach(s=>s.onclick=()=>toggle(s.dataset.id));
+  list.querySelectorAll('.del').forEach(b=>b.onclick=()=>del(b.dataset.id));
+}
+
+async function doParse(){
+  try{
+    const text=$('input').value.trim();
+    if(!text) return;
+    // 多轮澄清：把本轮补充并入待补全的原始输入，重新整体解析（pendingRaw 已含此前累积）
+    const parseText = pendingRaw ? (pendingRaw + ' ' + text) : text;
+    let r=parseAlarm(parseText); currentSource='rule';
+    if(!r.success){ // 本地规则失败/需澄清 → 尝试服务端兜底（可能接 LLM）
+      try{
+        const resp=await fetch('/api/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:parseText})});
+        if(resp.ok){ const sj=await resp.json(); if(sj&&sj.alarm){ r=sj; currentSource=sj.source||'llm'; } }
+      }catch(e){ /* 离线/无服务端：保留规则澄清结果，体验不变 */ }
+    }
+    if(r.success){
+      pendingRaw=null; pendingOrigin=null; setPendingUI(false);   // 补全成功 → 结束追问
+      currentParsed=r; renderPreview();
+    } else {
+      if(!pendingOrigin) pendingOrigin=text;                       // 进入/继续追问，累积原始输入
+      pendingRaw=parseText; setPendingUI(true);
+      currentParsed=r; renderPreview();
+    }
+  }catch(e){ console.error(e); $('json').textContent='解析出错：'+(e&&e.message||e); }
+}
+function setPendingUI(on){
+  if(on){ $('pendingBanner').style.display='flex'; $('pendingText').textContent='正在补全：「'+pendingOrigin+'」——请补充时间后再次点「解析」，或点选建议。'; }
+  else { $('pendingBanner').style.display='none'; $('pendingText').textContent=''; }
+}
+function saveAlarm(){
+  if(!currentParsed||!currentParsed.success) return;
+  const a=currentParsed.alarm;
+  const item={
+    id:'a'+Date.now()+Math.floor(Math.random()*1000),
+    raw:currentParsed.raw, timestamp:a.timestamp, datetime:a.datetime,
+    date:a.date, time:a.time, recurrence:a.recurrence, timezone:a.timezone,
+    label:a.label, enabled:true, createdAt:Date.now()
+  };
+  alarms.unshift(item); save(); renderList();
+  toast('已保存闹钟 ✓'); $('saveHint').textContent='下次响铃：'+fmtNext(computeNextTrigger(item));
+  syncAlarmToServer('add',item);
+}
+function toggle(id){ const a=alarms.find(x=>x.id===id); if(a){ a.enabled=!a.enabled; save(); renderList(); } }
+function del(id){ const item=alarms.find(x=>x.id===id); alarms=alarms.filter(x=>x.id!==id); save(); renderList(); toast('已删除'); if(item) syncAlarmToServer('remove',item); }
+
+let audioCtx=null;
+function ensureAudio(){ if(!audioCtx){ try{ audioCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(audioCtx&&audioCtx.state==='suspended') audioCtx.resume(); }
+function playRing(){
+  ensureAudio(); if(!audioCtx) return;
+  const now=audioCtx.currentTime;
+  for(let i=0;i<4;i++){ const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.type='sine'; o.frequency.value=880; o.connect(g); g.connect(audioCtx.destination);
+    const s=now+i*0.5; g.gain.setValueAtTime(0.0001,s); g.gain.exponentialRampToValueAtTime(0.3,s+0.02); g.gain.exponentialRampToValueAtTime(0.0001,s+0.4);
+    o.start(s); o.stop(s+0.45);
+  }
+}
+function notify(a){
+  if(pushActive) return; // 已启用云端推送时，由 Service Worker 负责系统通知，避免重复
+  if('Notification' in window && Notification.permission==='granted'){
+    try{ new Notification('⏰ 闹钟',{body:(a.label||'时间到')+'  ·  '+a.time, tag:a.id}); }catch(e){}
+  }
+}
+function fire(a){
+  playRing(); notify(a);
+  $('ringTime').textContent=a.time; $('ringLab').textContent=a.label||'时间到';
+  $('ringbox').classList.add('show');
+  if(a.recurrence==='none'){ a.enabled=false; save(); }
+  renderList();
+}
+$('ringStop').onclick=()=>{ $('ringbox').classList.remove('show'); };
+$('ringSnooze').onclick=()=>{ $('ringbox').classList.remove('show'); const a=alarms.find(x=>x.time===$('ringTime').textContent); if(a){ const nt=Date.now()+9*60000; a.timestamp=Math.floor(nt/1000); a.recurrence='none'; a.date=new Date(nt).toISOString().slice(0,10); a.enabled=true; save(); renderList(); toast('已贪睡 9 分钟'); } };
+
+function tick(){ const now=Date.now(); alarms.forEach(a=>{ if(a.enabled){ const nt=computeNextTrigger(a); if(nt&&nt<=now) fire(a); } }); }
+setInterval(tick,1000);
+
+function refreshPerm(){ const t=$('permText'); if(!('Notification' in window)){ t.textContent='浏览器不支持'; return; }
+  const p=Notification.permission; t.textContent = p==='granted'?'已授权':p==='denied'?'已拒绝':'未授权';
+  t.style.color = p==='granted'?'var(--good)':p==='denied'?'var(--bad)':'var(--warn)';
+}
+$('permBtn').onclick=()=>{ if(!('Notification' in window)){ toast('浏览器不支持通知'); return; }
+  Notification.requestPermission().then(()=>{ refreshPerm(); if(Notification.permission==='granted') toast('通知已开启 ✓'); });
+};
+
+/* ===================== 云端推送（Web Push） ===================== */
+let swReg=null, clientId=localStorage.getItem('alarm_agent_cid')||null, pushActive=false, vapidPublic=null;
+function setPushStatus(t){ const el=$('pushText'); if(el) el.textContent=t; el&&(el.style.color = pushActive?'var(--good)':(t==='未开启'?'var(--warn)':'var(--sub)')); }
+function urlBase64ToUint8(b64){ const s=atob(b64.replace(/-/g,'+').replace(/_/g,'/')); const u=new Uint8Array(s.length); for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i); return u; }
+
+async function initPush(){
+  if(!('serviceWorker' in navigator) || !('PushManager' in window)){ setPushStatus('浏览器不支持'); return; }
+  try{
+    swReg=await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    const existing=await swReg.pushManager.getSubscription();
+    if(existing && clientId){ pushActive=true; setPushStatus('已开启（关浏览器也响）'); }
+    else setPushStatus('未开启');
+  }catch(e){ setPushStatus('需本地服务端'); }
+}
+async function enablePush(){
+  try{
+    if(!swReg) swReg=await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted'){ toast('需授权通知才能开启云端推送'); setPushStatus('未授权'); return; }
+    let sub=await swReg.pushManager.getSubscription();
+    if(!sub){
+      if(!vapidPublic){ const r=await fetch('/api/vapid'); if(!r.ok) throw new Error('服务端不可达'); vapidPublic=(await r.json()).publicKey; }
+      sub=await swReg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:urlBase64ToUint8(vapidPublic)});
+    }
+    const reg=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
+    const rj=await reg.json(); clientId=rj.clientId; localStorage.setItem('alarm_agent_cid',clientId);
+    pushActive=true; setPushStatus('已开启（关浏览器也响）'); toast('云端推送已开启 ✓');
+  }catch(e){ console.error(e); toast('开启失败：'+(e.message||e)); setPushStatus('开启失败'); }
+}
+async function syncAlarmToServer(action,item){
+  if(!pushActive||!clientId) return;
+  try{
+    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label})}); }
+    else if(action==='remove'){ await fetch('/api/alarm/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId,id:item.id})}); }
+  }catch(e){ /* 离线：本地仍兜底调度 */ }
+}
+
+if('serviceWorker' in navigator){ window.addEventListener('load',initPush); }
+$('pushBtn').onclick=enablePush;
+
+$('parse').onclick=doParse;
+$('clear').onclick=()=>{ $('input').value=''; currentParsed=null; pendingRaw=null; pendingOrigin=null; setPendingUI(false); renderPreview(); };
+$('pendingCancel').onclick=()=>{ pendingRaw=null; pendingOrigin=null; setPendingUI(false); currentParsed=null; renderPreview(); };
+$('save').onclick=saveAlarm;
+document.querySelectorAll('#examples span').forEach(s=>s.onclick=()=>{ $('input').value=s.textContent; doParse(); });
+
+load(); renderList(); refreshPerm(); doParse();
+</script>
+</body>
+</html>

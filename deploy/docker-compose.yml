@@ -1,0 +1,37 @@
+# ============================================================
+# 闹钟 Agent 生产部署（Caddy 自动 HTTPS + 应用容器）
+# 在 deploy/ 目录下执行：  docker compose up -d --build
+# 前置：服务器已安装 Docker 与 Docker Compose，且 80/443 入站开放
+# ============================================================
+services:
+  app:
+    build:
+      context: ..            # 项目根（含 server.js / nlu.js / package.json）
+      dockerfile: deploy/Dockerfile
+    expose:
+      - "8080"
+    environment:
+      - PORT=8080
+    # 生产密钥等敏感配置统一放在 deploy/.env（不提交），详见 .env.example
+    env_file:
+      - .env
+    # —— 可选：开启 LLM 长尾兜底（在 .env 中设置下列变量）——
+    # ALARM_LLM_KEY / ALARM_LLM_BASE_URL / ALARM_LLM_MODEL
+    volumes:
+      - ../data:/app/data   # 持久化订阅与闹钟（VAPID 密钥也在此）
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data        # 证书持久化
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
