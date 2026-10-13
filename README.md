@@ -216,6 +216,7 @@ alarm_agent/
 ├── index.html / sw.js   # 参考 App（Web Push）
 ├── openapi.yaml         # OpenAPI 3 契约（v1.0.0）
 ├── api_reference.html   # 人读 API 参考
+├── LICENSE              # MIT License
 ├── tests/               # 解析引擎回归
 ├── test_openapi.js      # 开放 API 集成测试
 ├── deploy/              # Dockerfile / docker-compose.yml / Caddyfile / 部署与发布文档
@@ -226,4 +227,6 @@ alarm_agent/
 
 ## 📄 许可证
 
-内部项目，许可证待定。
+本项目采用 **MIT License**，详见 [LICENSE](./LICENSE)。
+
+可自由用于商业与非商业用途，唯一义务是在分发副本时保留版权与许可声明。
