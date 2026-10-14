@@ -240,6 +240,13 @@ function assert(cond, name, extra) {
   let mtj = JSON.parse(mt.body);
   assert(mt.status === 200 && mtj.metrics && typeof mtj.metrics.parse_total === 'number' && mtj.derived && typeof mtj.derived.parse_avg_latency_ms === 'number', 'GET /v1/metrics → 200 含聚合指标与派生量', mt.status);
 
+  // 投递原子抢占：同一条 pending 只会被 claim 一次（防跨 tick / 跨实例双发）
+  const claimId = db.enqueueDelivery({ tenant: 'testA', url: 'http://localhost:' + RECEIVER_PORT, body: '{}', sig: 'x' });
+  const firstClaim = db.claimDelivery(claimId);
+  const secondClaim = db.claimDelivery(claimId);
+  assert(firstClaim === true && secondClaim === false, '投递原子抢占：同一条仅可被 claim 一次（防双发）', 'first=' + firstClaim + ' second=' + secondClaim);
+  db.markDeliverySuccess(claimId); // 结算，避免 worker 后续无效重试
+
   // 崩溃恢复：直接写入一条「已存在」的 pending 投递，验证 worker 会续传处理（进程重启后同理）
   const recId = 'recovery-' + Date.now();
   const recBody = JSON.stringify({ event: 'alarm.fired', alarm_id: recId, tenant: 'testA', text: 'recovery', alarm: { time: '08:00' }, fired_at: new Date().toISOString() });

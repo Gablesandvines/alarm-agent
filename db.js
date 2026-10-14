@@ -137,6 +137,8 @@ CREATE TABLE IF NOT EXISTS metrics (
 
 // 旧版以明文 key 为主键的库，迁移为哈希存储（key_hash + 加密 key_enc）
 migrateKeysSchema();
+// deliveries 表补充 updated_at（崩溃恢复与终态清理依赖），旧库自动 ALTER
+migrateDeliveriesSchema();
 
 // ---------- 行 <-> 对象 归一 ----------
 function rowToKey(r) {
@@ -295,13 +297,29 @@ function enqueueDelivery({ tenant, url, body, sig }) {
 function getDueDeliveries(now) {
   return db.prepare("SELECT * FROM deliveries WHERE status='pending' AND next_attempt <= ? ORDER BY next_attempt ASC LIMIT 50").all(now);
 }
+// 原子抢占：仅当仍是 pending 才置为 processing（changes=1 才算抢到）。
+// 同一条投递在跨 tick / 跨实例重复扫描时不会被双发。
+function claimDelivery(id) {
+  const r = db.prepare("UPDATE deliveries SET status='processing', updated_at=? WHERE id=? AND status='pending'").run(new Date().toISOString(), id);
+  return r.changes === 1;
+}
+// 崩溃恢复：processing 行若超过 staleMs 未推进（进程被 kill 时未写回），回退为 pending 重试
+function recoverStuckDeliveries(beforeMs) {
+  const iso = new Date(beforeMs).toISOString();
+  return db.prepare("UPDATE deliveries SET status='pending' WHERE status='processing' AND updated_at < ?").run(iso).changes;
+}
+// 终态清理：success/failed 且超过保留期的行删除，防止 deliveries 表无限膨胀
+function pruneDeliveries(beforeMs) {
+  const iso = new Date(beforeMs).toISOString();
+  return db.prepare("DELETE FROM deliveries WHERE status IN ('success','failed') AND updated_at < ?").run(iso).changes;
+}
 function markDeliverySuccess(id) {
-  db.prepare("UPDATE deliveries SET status='success' WHERE id=?").run(id);
+  db.prepare("UPDATE deliveries SET status='success', updated_at=? WHERE id=?").run(new Date().toISOString(), id);
 }
 function markDeliveryRetry(id, attempt, nextAttempt, error) {
   const status = attempt >= DELIVERY_MAX_ATTEMPTS ? 'failed' : 'pending';
-  db.prepare("UPDATE deliveries SET attempt=?, next_attempt=?, status=?, last_error=? WHERE id=?")
-    .run(attempt, nextAttempt, status, error || null, id);
+  db.prepare("UPDATE deliveries SET attempt=?, next_attempt=?, status=?, last_error=?, updated_at=? WHERE id=?")
+    .run(attempt, nextAttempt, status, error || null, new Date().toISOString(), id);
 }
 
 // ---------- 限流（持久化：重启不丢、同库多实例可共享 WAL） ----------
@@ -364,6 +382,14 @@ function migrateKeysSchema() {
   for (const r of rows) ins.run(hashKey(r.key), encryptSecret(r.key), r.tenant, r.label, r.enabled, r.rate_limit, r.plan, r.webhook_url, r.webhook_verified, r.created_at);
   db.exec('DROP TABLE keys_old');
   console.log('[db] 已迁移 keys 表至哈希存储（共 ' + rows.length + ' 枚）');
+}
+
+// deliveries 表补充 updated_at 列（崩溃恢复 + 终态清理依赖；旧库 ALTER 补齐）
+function migrateDeliveriesSchema() {
+  const cols = db.prepare('PRAGMA table_info(deliveries)').all().map(c => c.name);
+  if (!cols.includes('updated_at')) {
+    db.exec("ALTER TABLE deliveries ADD COLUMN updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
+  }
 }
 
 // ---------- 首启：从旧 JSON 迁移 ----------
@@ -446,6 +472,6 @@ module.exports = {
   getAlarmsByTenant, getAlarm, findAlarmByIdempotency, saveAlarm, deleteAlarm, getAllAlarms,
   getUsage, bumpUsage,
   checkRateLimit, pruneStaleRateEvents, incrMetric, getMetrics,
-  enqueueDelivery, getDueDeliveries, markDeliverySuccess, markDeliveryRetry,
+  enqueueDelivery, getDueDeliveries, claimDelivery, recoverStuckDeliveries, pruneDeliveries, markDeliverySuccess, markDeliveryRetry,
   listSubs, addSub, deleteSub, listLegacyAlarms, saveLegacyAlarm, deleteLegacyAlarm
 };

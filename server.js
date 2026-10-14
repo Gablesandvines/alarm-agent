@@ -240,20 +240,38 @@ function enqueueWebhookDelivery(rawKey, url, a, nowMs) {
 // ---------- Webhook 投递 worker（持久化队列 + 指数退避，最多 8 次） ----------
 const DELIVERY_BACKOFF = [1, 2, 4, 8, 16, 32, 60, 60]; // 秒
 function deliveryBackoffMs(attempt) { return (DELIVERY_BACKOFF[Math.min(attempt, DELIVERY_BACKOFF.length - 1)] || 60) * 1000; }
-async function postWebhookOnce(url, body, sig) {
+const DELIVERY_TIMEOUT_MS = 5000;    // 单次 Webhook POST 超时，避免挂起堆积
+const DELIVERY_RECOVER_MS = 120000;  // processing 行超过 2 分钟未推进则视为卡死，回退重试
+const DELIVERY_PRUNE_MS = 7 * 24 * 3600 * 1000; // 终态投递行保留 7 天后清理
+async function postWebhookOnce(url, body, sig, timeoutMs = DELIVERY_TIMEOUT_MS) {
   const headers = {
     'Content-Type': 'application/json',
     'X-Alarm-Event': 'alarm.fired',
     'X-Alarm-Delivery-Id': crypto.randomBytes(8).toString('hex'),
     'X-Alarm-Signature': sig
   };
-  const r = await fetch(url, { method: 'POST', headers, body });
-  return r.ok;
-}
-setInterval(async () => {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
+    const r = await fetch(url, { method: 'POST', headers, body, signal: ctrl.signal });
+    return r.ok;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 投递 worker：单飞（delivering 标志防同进程重叠 tick）+ 跨实例原子抢占（claimDelivery）+ 崩溃恢复
+let delivering = false;
+setInterval(async () => {
+  if (delivering) return; // 上一轮仍在跑（fetch 慢），跳过本 tick，下个周期再扫
+  delivering = true;
+  try {
+    // 崩溃恢复：回退长时间卡在 processing 的行（进程被 kill 时未写回）
+    db.recoverStuckDeliveries(Date.now() - DELIVERY_RECOVER_MS);
     const due = db.getDueDeliveries(Date.now());
     for (const d of due) {
+      // 原子抢占：仅当仍是 pending 才置 processing，跨实例/跨 tick 重复扫描都不会双发
+      if (!db.claimDelivery(d.id)) continue;
       try {
         const ok = await postWebhookOnce(d.url, d.body, d.sig);
         if (ok) {
@@ -276,15 +294,21 @@ setInterval(async () => {
       }
     }
   } catch (e) { log('error', 'delivery_worker_error', { error: e.message }); }
+  finally { delivering = false; }
 }, 1000);
 
-// 定期清理过期限流记录，避免 rate_limits 表无限增长
+// 定期清理过期记录：限流（1 分钟窗口）+ 终态投递（7 天保留期），防止表无限膨胀
 setInterval(() => { try { db.pruneStaleRateEvents(Date.now() - RATE_WINDOW_MS); } catch (e) {} }, 60000);
+setInterval(() => { try { const n = db.pruneDeliveries(Date.now() - DELIVERY_PRUNE_MS); if (n > 0) log('info', 'delivery_pruned', { count: n }); } catch (e) {} }, 3600 * 1000);
 function verifyWebhook(apiKey, url) {
   const body = JSON.stringify({ event: 'webhook.test', challenge: crypto.randomBytes(8).toString('hex'), message: 'Alarm Agent webhook 连通性测试' });
   const sig = apiKey ? crypto.createHmac('sha256', apiKey).update(body).digest('hex') : '';
   const headers = { 'Content-Type': 'application/json', 'X-Alarm-Event': 'webhook.test', 'X-Alarm-Signature': 'sha256=' + sig };
-  return fetch(url, { method: 'POST', headers, body }).then(r => r.ok).catch(() => false);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), DELIVERY_TIMEOUT_MS);
+  return fetch(url, { method: 'POST', headers, body, signal: ctrl.signal })
+    .then(r => r.ok).catch(() => false)
+    .finally(() => clearTimeout(timer));
 }
 
 // ---------- 共享解析：规则优先，LLM 兜底（供 /api/parse 与 /v1/parse 复用） ----------

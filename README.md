@@ -14,6 +14,7 @@
 - **Webhook 投递**：触发时向你的回调地址投递 `alarm.fired` 事件，附带 **HMAC-SHA256 签名**，可验真伪。
 - **多租户 API Key**：Bearer 鉴权、按 key 限流（计数持久化，重启不丢）、租户数据隔离。
 - **可观测性**：结构化 JSON 日志 + `/v1/metrics` 指标（解析耗时、Webhook 投递成功率），便于接入日志 / 监控系统。
+- **投递可靠性**：Webhook 投递队列 **原子抢占**（同一条不双发、可多实例共享）+ 5s 超时防挂起 + 卡死自动恢复 + 终态 7 天清理。
 - **开发者门户**：`/portal` 单页控制台，自助管理密钥、配置 Webhook、查看用量看板。
 - **三档套餐**：`free` / `pro` / `enterprise`，含月度解析配额。
 - **自托管、零外部依赖**：数据存本地 SQLite（Node 22 内置 `node:sqlite`），不依赖外部数据库或云服务。
@@ -192,7 +193,7 @@ curl http://localhost:8080/v1/usage -H "Authorization: Bearer <你的KEY>"
 
 ```bash
 node tests/run.js        # 解析引擎回归（56 例）
-npm test                # 开放 API 集成测试（54 例，含密钥隔离、配额、Webhook 投递与验签、崩溃恢复、指标端点）
+npm test                # 开放 API 集成测试（55 例，含密钥隔离、配额、Webhook 投递与验签、崩溃恢复、原子抢占、指标端点）
 ```
 
 集成测试使用独立 `test.alarm.db`，不会污染你的 `data/`。
@@ -205,7 +206,7 @@ CI（GitHub Actions）在每次 push/PR 到 `main` 时自动运行上述两组�
 
 1. **限流已持久化**：限流计数写入本地 SQLite（随库多实例可共享，依赖 WAL）；真正水平扩展的多实例部署建议改用 Redis。
 2. **软计费**：未接入真实支付。
-3. **Webhook 为 best-effort**：长时间宕机会丢失个别触发；接收端请做幂等。
+3. **Webhook 为 best-effort 但已强化**：投递队列持久化 + 原子抢占（不双发）+ 崩溃恢复；接收端仍建议做幂等（同一 `alarm_id` 可能重投到终态前）。
 4. **SQLite 单文件**：中等规模足够，规模上来后换成 Postgres（见 `deploy.md`）。
 5. **错过宽限 2 分钟**：触发点 ±2 分钟外的事件静默丢弃。
 
