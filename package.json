@@ -5,7 +5,9 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node test_openapi.js",
+    "test": "node tests/scheduler.js && node tests/run.js && node test_openapi.js",
+    "test:engine": "node tests/run.js",
+    "test:scheduler": "node tests/scheduler.js",
     "keys": "node manage_keys.js"
   },
   "dependencies": {

@@ -14,6 +14,7 @@ const path = require('path');
 const webpush = require('web-push');
 const crypto = require('crypto');
 const { parseAlarm } = require('./nlu.js');
+const { computeNext, nextTriggerMs } = require('./scheduler.js');
 
 const ROOT = __dirname;
 const DATA = path.join(ROOT, 'data');
@@ -35,112 +36,11 @@ webpush.setVapidDetails('mailto:alarm-agent@example.com', vapid.publicKey, vapid
 const db = require('./db.js');
 const { PLANS } = db;
 
-// ---------- 时区感知工具（夏令时安全：把「墙钟 日期+时间+IANA 时区」转为 UTC 毫秒） ----------
-function tzOffsetAt(tz, epoch) {
-  const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const p = Object.fromEntries(f.formatToParts(new Date(epoch)).map(x => [x.type, x.value]));
-  const hour = p.hour === '24' ? 0 : (+p.hour);
-  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, hour, +p.minute, +p.second);
-  return asUtc - epoch;
-}
-function wallToEpoch(y, mo, d, hh, mm, tz) {
-  const guess = Date.UTC(y, mo - 1, d, hh, mm, 0, 0);
-  let off = tzOffsetAt(tz, guess);
-  let utc = guess - off;
-  const off2 = tzOffsetAt(tz, utc); // DST 边界二次修正（处理春进/秋退切换日）
-  if (off2 !== off) utc = guess - off2;
-  return utc;
-}
-function tzDateParts(epoch, tz) {
-  const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-  const p = Object.fromEntries(f.formatToParts(new Date(epoch)).map(x => [x.type, x.value]));
-  return { y: +p.year, mo: +p.month, d: +p.day };
-}
-function addDays(y, mo, d, n) { const dt = new Date(Date.UTC(y, mo - 1, d)); dt.setUTCDate(dt.getUTCDate() + n); return { y: dt.getUTCFullYear(), mo: dt.getUTCMonth() + 1, d: dt.getUTCDate() }; }
-function daysInMonth(y, mo) { return new Date(Date.UTC(y, mo, 0)).getUTCDate(); }
-function weekdayOf(y, mo, d) { return new Date(Date.UTC(y, mo - 1, d)).getUTCDay(); }
-
 // ---------- 结构化日志（JSON 行，便于采集到 Loki / ELK / 云端日志） ----------
 function log(level, event, fields) {
   const obj = { ts: new Date().toISOString(), level, event };
   if (fields) Object.assign(obj, fields);
   process.stdout.write(JSON.stringify(obj) + '\n');
-}
-
-// 由闹钟子对象计算下一次触发（毫秒）：一次性优先用绝对时间戳；显式 date+time 按闹钟时区换算（夏令时安全）
-function nextTriggerMs(alarm) {
-  const rec = alarm.recurrence || 'none';
-  const tz = alarm.timezone || 'Asia/Shanghai';
-  if (rec === 'none') {
-    if (alarm.timestamp) return alarm.timestamp * 1000;
-    if (alarm.date && alarm.time) {
-      const [Y, M, D] = alarm.date.split('-').map(Number);
-      const [hh, mm] = alarm.time.split(':').map(Number);
-      return wallToEpoch(Y, M, D, hh, mm, tz);
-    }
-    return null;
-  }
-  const anchor = (alarm.timestamp || Math.floor(Date.now() / 1000)) * 1000;
-  return computeNext(alarm.time, rec, anchor, tz);
-}
-
-// ---------- 重复规则：计算下一次触发（时区感知，支持夏令时 + 月度） ----------
-function computeNext(time, recurrence, anchorTs, timezone) {
-  const tz = timezone || 'Asia/Shanghai';
-  const now = Date.now();
-  const [hh, mm] = time.split(':').map(Number);
-  if (recurrence === 'none') return null;
-  if (!/^\d{1,2}:\d{2}$/.test(time)) return null;
-  const at = (y, mo, d) => wallToEpoch(y, mo, d, hh, mm, tz);
-  // 以「时区内的日历日」为步进来找下一次触发，避免本地时区与闹钟时区错位
-  if (recurrence === 'daily') {
-    let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
-    while (t < now && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
-    return t;
-  }
-  if (recurrence === 'weekdays') {
-    let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
-    while ((weekdayOf(cur.y, cur.mo, cur.d) === 0 || weekdayOf(cur.y, cur.mo, cur.d) === 6 || t < now) && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
-    return t;
-  }
-  if (recurrence === 'weekend') {
-    let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
-    while ((weekdayOf(cur.y, cur.mo, cur.d) !== 0 && weekdayOf(cur.y, cur.mo, cur.d) !== 6 || t < now) && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
-    return t;
-  }
-  if (recurrence.startsWith('weekly:')) {
-    const w = parseInt(recurrence.split(':')[1], 10);
-    let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
-    while ((weekdayOf(cur.y, cur.mo, cur.d) !== w || t < now) && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
-    return t;
-  }
-  if (recurrence.startsWith('every:')) {
-    const n = parseInt(recurrence.split(':')[1], 10) || 1;
-    let cur = tzDateParts(anchorTs, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
-    while (g < 600) { if (t >= now) return t; cur = addDays(cur.y, cur.mo, cur.d, n); t = at(cur.y, cur.mo, cur.d); g++; }
-    return null;
-  }
-  if (recurrence.startsWith('biweekly:')) {
-    const w = parseInt(recurrence.split(':')[1], 10);
-    const EPOCH = Date.UTC(2024, 0, 1);
-    const monOf = ts => { const x = tzDateParts(ts, tz); const dx = new Date(Date.UTC(x.y, x.mo - 1, x.d)); const o = (dx.getUTCDay() + 6) % 7; dx.setUTCDate(dx.getUTCDate() - o); return dx.getTime(); };
-    let cur = tzDateParts(anchorTs, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
-    while (g < 120) { const dow = weekdayOf(cur.y, cur.mo, cur.d); const wk = Math.round((monOf(t) - EPOCH) / (7 * 86400000)); if (dow === w && t >= now && wk % 2 === 0) return t; cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
-    return null;
-  }
-  if (recurrence.startsWith('monthly:')) {
-    const day = parseInt(recurrence.split(':')[1], 10);
-    let cur = tzDateParts(now, tz); let y = cur.y, mo = cur.mo, g = 0;
-    while (g < 36) {
-      const dd = Math.min(day, daysInMonth(y, mo));
-      const t = at(y, mo, dd);
-      if (t >= now) return t;
-      mo++; if (mo > 12) { mo = 1; y++; }
-      g++;
-    }
-    return null;
-  }
-  return null;
 }
 
 // ---------- 静态文件 MIME ----------
@@ -151,11 +51,27 @@ const MIME = {
 };
 
 // ---------- 工具 ----------
+// 可抛出并携带 HTTP 状态/错误码的异常，便于在请求处理器顶层统一转换
+class HttpError extends Error {
+  constructor(status, code, message) { super(message); this.status = status; this.code = code; }
+}
+// 请求体上限（默认 64KB）：防止超大 body 耗尽内存；超限抛出 413，由处理器统一响应
+const READ_BODY_MAX_BYTES = Number(process.env.ALARM_MAX_BODY_BYTES) || 65536;
 function readBody(req) {
-  return new Promise(resolve => {
-    let b = '';
-    req.on('data', c => b += c);
-    req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch (e) { resolve({}); } });
+  return new Promise((resolve, reject) => {
+    let size = 0, b = '', rejected = false;
+    req.on('data', c => {
+      if (rejected) return;
+      size += c.length;
+      if (size > READ_BODY_MAX_BYTES) {
+        rejected = true;
+        reject(new HttpError(413, 'payload_too_large', '请求体超过 ' + READ_BODY_MAX_BYTES + ' 字节上限'));
+        return;
+      }
+      b += c;
+    });
+    req.on('end', () => { if (!rejected) { try { resolve(b ? JSON.parse(b) : {}); } catch (e) { resolve({}); } } });
+    req.on('error', () => { if (!rejected) { rejected = true; reject(new HttpError(400, 'bad_request', '请求体读取失败')); } });
   });
 }
 function sendJSON(res, obj, code = 200) {
@@ -204,6 +120,26 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization'
 };
+// CORS 白名单（可选）：设置 ALARM_CORS_ORIGINS=https://a.com,https://b.com 后，
+// 仅列表中 Origin 会被放行（回显该 Origin + Vary:Origin），其余请求不带 ACAO，浏览器将拦截跨域读取。
+// 未设置时回退为 *（开放，适合本地演示）。
+const CORS_ORIGINS = (process.env.ALARM_CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+function corsHeaders(req) {
+  if (!CORS_ORIGINS.length) return CORS_HEADERS;
+  const origin = req.headers.origin;
+  if (origin && CORS_ORIGINS.includes(origin)) {
+    return {
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+      'Vary': 'Origin'
+    };
+  }
+  return {
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization'
+  };
+}
 
 // ---------- API Key（密钥存储已迁移至 db.js，启动时自动建示例密钥） ----------
 function genRequestId() { return 'req_' + crypto.randomBytes(10).toString('hex'); }
@@ -327,10 +263,12 @@ async function handleOpenApi(req, res) {
   const url = req.url.split('?')[0];
   const reqId = genRequestId();
 
-  // CORS 头 + 预检
-  for (const k in CORS_HEADERS) res.setHeader(k, CORS_HEADERS[k]);
+  // CORS 头 + 预检（支持 ALARM_CORS_ORIGINS 白名单）
+  const cors = corsHeaders(req);
+  for (const k in cors) res.setHeader(k, cors[k]);
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
+  try {
   // 健康检查（免鉴权）
   if (url === '/v1/health' && req.method === 'GET') {
     return sendJSON(res, { status: 'ok', version: '1.0.0', request_id: reqId });
@@ -544,49 +482,89 @@ async function handleOpenApi(req, res) {
   }
 
   return standardError(res, 'not_found', '接口不存在', 404, reqId);
+  } catch (e) {
+    if (e instanceof HttpError) return standardError(res, e.code, e.message, e.status, reqId);
+    log('error', 'unhandled_error', { error: e.message, url });
+    return standardError(res, 'internal_error', '服务器内部错误', 500, reqId);
+  }
 }
 
 // ---------- API ----------
+// 参考 App 接口（Web Push 演示 + 前端兜底解析）。
+// 【安全】可选项 ALARM_APP_KEY：设置后，除 /api/vapid(公开公钥) 外的所有 /api/* 都需携带
+//   Authorization: Bearer <APP_KEY> 或请求头 x-app-key: <APP_KEY>，否则 401。
+// 未设置时保持开放（本地演示零配置），但会在启动日志提示生产环境应启用。
+const APP_API_KEY = process.env.ALARM_APP_KEY || '';
+const APP_PARSE_RATE_LIMIT = Number(process.env.ALARM_APP_PARSE_LIMIT) || 120; // /api/parse 全局限流（防绕过平台配额白嫖）
+if (!APP_API_KEY) console.warn('[security] 未设置 ALARM_APP_KEY：/api/* 当前开放（仅适合本地演示）。生产部署请设置该环境变量以启用 App Key 鉴权。');
+
+function appError(res, code, message, status) {
+  return sendJSON(res, { error: { code, message } }, status);
+}
+
 async function handleApi(req, res) {
   const url = req.url.split('?')[0];
-  if (url === '/api/vapid' && req.method === 'GET') {
-    return sendJSON(res, { publicKey: vapid.publicKey });
+  const reqId = genRequestId();
+
+  // CORS（参考 App 多为同源调用；若配置 ALARM_CORS_ORIGINS 则按白名单回显 Origin）
+  const cors = corsHeaders(req);
+  for (const k in cors) res.setHeader(k, cors[k]);
+
+  // App Key 门控（/api/vapid 公开，无需鉴权）
+  if (APP_API_KEY && url !== '/api/vapid') {
+    const h = req.headers['authorization'] || '';
+    const m = h.match(/^Bearer\s+(.+)$/i);
+    const provided = m ? m[1].trim() : (req.headers['x-app-key'] || '');
+    if (provided !== APP_API_KEY) return appError(res, 'unauthorized', '缺少或错误的 App Key（设置 ALARM_APP_KEY 后需携带）', 401);
   }
-  if (url === '/api/register' && req.method === 'POST') {
-    const body = await readBody(req);
-    if (!body.subscription) return sendJSON(res, { error: 'missing subscription' }, 400);
-    const id = 'c' + Date.now() + Math.random().toString(36).slice(2, 7);
-    db.addSub(id, body.subscription);
-    console.log('[register] 新订阅', id);
-    return sendJSON(res, { clientId: id });
+
+  try {
+    if (url === '/api/vapid' && req.method === 'GET') {
+      return sendJSON(res, { publicKey: vapid.publicKey });
+    }
+    if (url === '/api/register' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (!body.subscription) return appError(res, 'bad_request', 'missing subscription', 400);
+      const id = 'c' + Date.now() + Math.random().toString(36).slice(2, 7);
+      db.addSub(id, body.subscription);
+      console.log('[register] 新订阅', id);
+      return sendJSON(res, { clientId: id });
+    }
+    if (url === '/api/alarm' && req.method === 'POST') {
+      const body = await readBody(req);
+      const sub = db.listSubs().find(x => x.id === body.clientId);
+      const alarm = {
+        id: body.id || ('al' + Date.now() + Math.random().toString(36).slice(2, 5)),
+        clientId: body.clientId,
+        subscription: sub ? sub.subscription : body.subscription,
+        timestamp: body.timestamp, time: body.time, recurrence: body.recurrence || 'none',
+        label: body.label || '', fired: false, nextTrigger: (body.timestamp || 0) * 1000
+      };
+      db.saveLegacyAlarm(alarm);
+      console.log('[alarm] 已登记', alarm.id, alarm.time, alarm.recurrence);
+      return sendJSON(res, { ok: true, id: alarm.id });
+    }
+    if (url === '/api/alarm/remove' && req.method === 'POST') {
+      const body = await readBody(req);
+      const ok = db.deleteLegacyAlarm(body.clientId, body.id);
+      return sendJSON(res, { ok: true, removed: ok ? 1 : 0 });
+    }
+    if (url === '/api/parse' && req.method === 'POST') {
+      // 全局限流：/api/parse 不经过平台按 key 配额，需独立限流防止被白嫖刷量
+      const rl = db.checkRateLimit('app:parse', APP_PARSE_RATE_LIMIT, RATE_WINDOW_MS);
+      if (!rl.allowed) { res.setHeader('Retry-After', String(rl.retryAfter)); return appError(res, 'rate_limited', '请求过于频繁，请稍后重试', 429); }
+      const body = await readBody(req);
+      const text = (body.text || '').trim();
+      if (!text) return appError(res, 'bad_request', 'missing text', 400);
+      const result = await resolveParse(text, body.context ? { context: body.context } : undefined);
+      return sendJSON(res, { ...result, request_id: reqId });
+    }
+    return appError(res, 'not_found', 'not found', 404);
+  } catch (e) {
+    if (e instanceof HttpError) return appError(res, e.code, e.message, e.status);
+    log('error', 'api_unhandled_error', { error: e.message, url });
+    return appError(res, 'internal_error', '服务器内部错误', 500);
   }
-  if (url === '/api/alarm' && req.method === 'POST') {
-    const body = await readBody(req);
-    const sub = db.listSubs().find(x => x.id === body.clientId);
-    const alarm = {
-      id: body.id || ('al' + Date.now() + Math.random().toString(36).slice(2, 5)),
-      clientId: body.clientId,
-      subscription: sub ? sub.subscription : body.subscription,
-      timestamp: body.timestamp, time: body.time, recurrence: body.recurrence || 'none',
-      label: body.label || '', fired: false, nextTrigger: (body.timestamp || 0) * 1000
-    };
-    db.saveLegacyAlarm(alarm);
-    console.log('[alarm] 已登记', alarm.id, alarm.time, alarm.recurrence);
-    return sendJSON(res, { ok: true, id: alarm.id });
-  }
-  if (url === '/api/alarm/remove' && req.method === 'POST') {
-    const body = await readBody(req);
-    const ok = db.deleteLegacyAlarm(body.clientId, body.id);
-    return sendJSON(res, { ok: true, removed: ok ? 1 : 0 });
-  }
-  if (url === '/api/parse' && req.method === 'POST') {
-    const body = await readBody(req);
-    const text = (body.text || '').trim();
-    if (!text) return sendJSON(res, { error: 'missing text' }, 400);
-    const result = await resolveParse(text, body.context ? { context: body.context } : undefined);
-    return sendJSON(res, { ...result });
-  }
-  return sendJSON(res, { error: 'not found' }, 404);
 }
 
 // ---------- HTTP 服务 ----------
@@ -599,8 +577,14 @@ const server = http.createServer((req, res) => {
   if (!fp.startsWith(ROOT)) { res.writeHead(403); return res.end('forbidden'); }
   fs.readFile(fp, (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
+    let out = data;
+    // 向首页注入 App Key 占位符（仅当启用 ALARM_APP_KEY 时）：让同源前端自动携带 x-app-key，
+    // 从而满足 /api/* 的 App Key 门控；跨域攻击者无法读取该值（CORS 阻止），实现轻量防护。
+    if (fp.endsWith('index.html') && APP_API_KEY) {
+      out = Buffer.from(data.toString('utf8').replace('__APP_API_KEY__', APP_API_KEY), 'utf8');
+    }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(fp)] || 'application/octet-stream' });
-    res.end(data);
+    res.end(out);
   });
 });
 

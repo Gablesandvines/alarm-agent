@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#3b6cf6">
+<meta name="app-api-key" content="__APP_API_KEY__">
 <link rel="manifest" href="manifest.webmanifest">
 <title>闹钟 Agent · MVP</title>
 <style>
@@ -202,6 +203,14 @@ function recLabel(r){
 }
 
 const $=id=>document.getElementById(id);
+// App Key：服务端在启用 ALARM_APP_KEY 时会注入到 <meta name="app-api-key">。
+// 同源前端据此自动附带 x-app-key，满足 /api/* 门控；未注入（本地演示）则为空、不携带。
+const APP_API_KEY = (document.querySelector('meta[name="app-api-key"]') || {}).content || '';
+function appHeaders(extra){
+  const h = Object.assign({'Content-Type':'application/json'}, extra||{});
+  if (APP_API_KEY) h['x-app-key'] = APP_API_KEY;
+  return h;
+}
 function renderPreview(){
   if(!currentParsed){ $('json').textContent='// 点击「解析」查看结果'; $('summary').innerHTML=''; $('amb').innerHTML=''; $('clarify').style.display='none'; $('clarify').innerHTML=''; $('saveRow').style.display='none'; return; }
   const r=currentParsed;
@@ -267,7 +276,7 @@ async function doParse(){
       try{
         const body={text};
         if(pendingContext) body.context=pendingContext;
-        const resp=await fetch('/api/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const resp=await fetch('/api/parse',{method:'POST',headers:appHeaders(),body:JSON.stringify(body)});
         if(resp.ok){ const sj=await resp.json(); if(sj&&(sj.alarm||sj.partial)){ r=sj; currentSource=sj.source||'llm'; } }
       }catch(e){ /* 离线/无服务端：保留规则澄清结果，体验不变 */ }
     }
@@ -368,7 +377,7 @@ async function enablePush(){
       if(!vapidPublic){ const r=await fetch('/api/vapid'); if(!r.ok) throw new Error('服务端不可达'); vapidPublic=(await r.json()).publicKey; }
       sub=await swReg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:urlBase64ToUint8(vapidPublic)});
     }
-    const reg=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub.toJSON()})});
+    const reg=await fetch('/api/register',{method:'POST',headers:appHeaders(),body:JSON.stringify({subscription:sub.toJSON()})});
     const rj=await reg.json(); clientId=rj.clientId; localStorage.setItem('alarm_agent_cid',clientId);
     pushActive=true; setPushStatus('已开启（关浏览器也响）'); toast('云端推送已开启 ✓');
   }catch(e){ console.error(e); toast('开启失败：'+(e.message||e)); setPushStatus('开启失败'); }
@@ -376,8 +385,8 @@ async function enablePush(){
 async function syncAlarmToServer(action,item){
   if(!pushActive||!clientId) return;
   try{
-    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label})}); }
-    else if(action==='remove'){ await fetch('/api/alarm/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId,id:item.id})}); }
+    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label})}); }
+    else if(action==='remove'){ await fetch('/api/alarm/remove',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id})}); }
   }catch(e){ /* 离线：本地仍兜底调度 */ }
 }
 

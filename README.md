@@ -76,6 +76,11 @@ docker compose up -d --build
 docker compose exec app node manage_keys.js create --label prod --plan enterprise
 ```
 
+> **生产加固清单**：除 `ALARM_MASTER_KEY` 外，还建议设置：
+> - `ALARM_APP_KEY=<强随机串>` —— 启用 `/api/*` 接口鉴权（防绕过平台配额白嫖参考 App 接口）。
+> - `ALARM_CORS_ORIGINS=https://你的前端域名` —— 收窄 CORS 可信来源。
+> - `ALARM_MAX_BODY_BYTES=65536` —— 请求体上限（默认 64KB，已足够）。
+
 ---
 
 ## 🔌 开放 API
@@ -186,15 +191,19 @@ curl http://localhost:8080/v1/usage -H "Authorization: Bearer <你的KEY>"
 - **密钥静态加密**：数据库仅存密钥的 **SHA-256 哈希**用于鉴权；原始 Key 以 **AES-256-GCM** 加密存储，主密钥来自环境变量 `ALARM_MASTER_KEY`。**生产必须设置 `ALARM_MASTER_KEY`，否则退化为明文并告警。**
 - **Webhook 验签**：投递事件带 HMAC 签名，接收端可校验来源真实性。
 - **租户隔离**：按 Key 的 `tenant` 字段隔离闹钟、用量、Webhook；禁用/启用密钥校验归属。
-- **限流 + 配额**：按 key 限流、月度配额 402 拦截。
+- **限流 + 配额**：开放 API 按 key 限流、月度配额 402 拦截；参考 App 接口 `/api/parse` 另有独立的全局限流（防绕过平台配额白嫖）。
+- **参考 App 接口（/api/*）可选项 App Key 鉴权**：设置环境变量 `ALARM_APP_KEY` 后，除公开端点 `/api/vapid` 外所有 `/api/*` 均需携带 `Authorization: Bearer <APP_KEY>` 或 `x-app-key` 请求头，否则 401；服务端会向同源首页注入该 Key，前端自动附带。**未设置时保持开放（仅适合本地演示，启动会告警）。**
+- **请求体上限**：所有 POST 接口限制请求体大小（默认 64KB，可用 `ALARM_MAX_BODY_BYTES` 调整），超限返回 413，防止内存耗尽。
+- **CORS 可配置**：默认 `*`；生产可通过 `ALARM_CORS_ORIGINS=https://a.com,https://b.com` 限定可信来源（仅列表内 Origin 放行，其余不带 `Access-Control-Allow-Origin`）。
 
 ---
 
 ## 🧪 测试
 
 ```bash
-node tests/run.js        # 解析引擎回归（56 例）
-npm test                # 开放 API 集成测试（55 例，含密钥隔离、配额、Webhook 投递与验签、崩溃恢复、原子抢占、指标端点）
+node tests/run.js        # 解析引擎回归（66 例，含多轮追问/矛盾检测/每月重复）
+node tests/scheduler.js  # 调度/时区回归（17 例，含美东 DST 春进/秋退墙钟稳定、daily/monthly 重排）
+npm test                # 上述两套 + 开放 API 集成测试（67 例，含密钥隔离、配额、Webhook 投递与验签、崩溃恢复、原子抢占、指标边界、调度重排、投递退避、App Key 门控）
 ```
 
 集成测试使用独立 `test.alarm.db`，不会污染你的 `data/`。
@@ -210,7 +219,7 @@ CI（GitHub Actions）在每次 push/PR 到 `main` 时自动运行上述两组�
 3. **Webhook 为 best-effort 但已强化**：投递队列持久化 + 原子抢占（不双发）+ 崩溃恢复；接收端仍建议做幂等（同一 `alarm_id` 可能重投到终态前）。
 4. **SQLite 单文件**：中等规模足够，规模上来后换成 Postgres（见 `deploy.md`）。
 5. **错过宽限 2 分钟**：触发点 ±2 分钟外的事件静默丢弃。
-6. **两套闹钟模型并存（设计如此，非冗余）**：参考 App（`legacy_alarms` + 浏览器 Web Push 订阅）服务于「关页也能响」的演示；开放平台（`alarms` + Webhook）服务于服务端业务触发。二者走**不同投递通道**（Web Push vs Webhook），仅触发计算（`computeNext`）共享同一引擎。
+6. **两套闹钟模型并存（设计如此，非冗余）**：参考 App（`legacy_alarms` + 浏览器 Web Push 订阅）服务于「关页也能响」的演示；开放平台（`alarms` + Webhook）服务于服务端业务触发。二者走**不同投递通道**（Web Push vs Webhook），仅触发计算（`computeNext`/`nextTriggerMs`）共享同一引擎（见 `scheduler.js`）。
 
 ---
 
@@ -218,7 +227,8 @@ CI（GitHub Actions）在每次 push/PR 到 `main` 时自动运行上述两组�
 
 ```
 alarm_agent/
-├── server.js            # HTTP 服务：开放 API + 参考 App + 推送/投递调度
+├── server.js            # HTTP 服务：开放 API + 参考 App + 推送/投递调度（薄编排层）
+├── scheduler.js         # 时区感知调度（夏令时安全）：wallToEpoch/computeNext/nextTriggerMs
 ├── db.js                # 持久层（node:sqlite）：密钥/闹钟/用量/Webhook 投递队列
 ├── nlu.js               # 自然语言 → 闹钟 JSON 解析引擎
 ├── manage_keys.js       # 密钥管理 CLI
@@ -227,7 +237,7 @@ alarm_agent/
 ├── openapi.yaml         # OpenAPI 3 契约（v1.0.0）
 ├── api_reference.html   # 人读 API 参考
 ├── LICENSE              # MIT License
-├── tests/               # 解析引擎回归
+├── tests/               # 解析引擎回归 + 调度/时区回归
 ├── test_openapi.js      # 开放 API 集成测试
 ├── deploy/              # Dockerfile / docker-compose.yml / Caddyfile / 部署与发布文档
 └── data/                # 运行时数据（alarm.db、vapid.json、keys.json 遗留）

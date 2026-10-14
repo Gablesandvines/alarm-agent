@@ -44,6 +44,11 @@ const receiver = http.createServer((rq, rs) => {
 });
 receiver.listen(RECEIVER_PORT);
 
+// 失败接收端：恒返回 500，用于验证 Webhook 投递的退避重试（而非标记成功/双发）
+const RECEIVER_FAIL_PORT = 8092;
+const failReceiver = http.createServer((rq, rs) => { rq.resume(); rs.writeHead(500); rs.end('err'); });
+failReceiver.listen(RECEIVER_FAIL_PORT);
+
 function pad(n) { return String(n).padStart(2, '0'); }
 function localYMD(dt) { return dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate()); }
 function localHM(dt) { return pad(dt.getHours()) + ':' + pad(dt.getMinutes()); }
@@ -55,17 +60,20 @@ function waitFor(cond, timeoutMs) {
   });
 }
 
-function req(method, p, headers, body) {
-  return new Promise((resolve, reject) => {
-    const r = http.request({ host: 'localhost', port: PORT, method, path: p, headers: headers || {} }, res => {
+function reqOn(port, method, p, headers, body) {
+  return new Promise((resolve) => {
+    const r = http.request({ host: 'localhost', port, method, path: p, headers: headers || {} }, res => {
       let b = ''; res.on('data', c => b += c);
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: b }));
     });
-    r.on('error', reject);
+    // 套接字错误（如服务端在读取超大 body 时中断连接）不抛出，避免中断整个测试；以 status:0 表示连接异常
+    r.on('error', () => resolve({ status: 0, headers: {}, body: '', error: true }));
     if (body) r.write(body);
     r.end();
   });
 }
+const req = (method, p, headers, body) => reqOn(PORT, method, p, headers, body);
+const req2 = (method, p, headers, body) => reqOn(PORT + 1, method, p, headers, body);
 
 let pass = 0, fail = 0;
 function assert(cond, name, extra) {
@@ -85,6 +93,11 @@ function assert(cond, name, extra) {
   console.log('— 开放 API 集成测试 —');
   let h = await req('GET', '/v1/health', {});
   assert(h.status === 200 && JSON.parse(h.body).status === 'ok', 'GET /v1/health → 200 {status:ok}', h.status);
+
+  // 指标空值边界：在尚未发生任何解析/投递的「全新」测试库上，派生量应为安全默认（非 NaN）
+  let m0 = await req('GET', '/v1/metrics', { Authorization: 'Bearer ' + NORMAL_KEY }, null);
+  let m0j = JSON.parse(m0.body);
+  assert(m0.status === 200 && m0j.derived.parse_avg_latency_ms === 0 && m0j.derived.delivery_success_rate === null, 'GET /v1/metrics 空库边界：avg_latency=0, success_rate=null（非 NaN）', JSON.stringify(m0j.derived));
 
   let p = await req('POST', '/v1/parse', {}, JSON.stringify({ text: '明天早上8点叫我起床' }));
   assert(p.status === 401, 'POST /v1/parse 无 Key → 401', p.status);
@@ -255,6 +268,31 @@ function assert(cond, name, extra) {
   const recGot = await waitFor(() => received.find(x => JSON.parse(x.body).alarm_id === recId), 5000);
   assert(recGot, '崩溃恢复：预存 pending 投递被 worker 续传送达', 'received=' + received.length);
 
+  // 调度器：recurring(daily) 闹钟到点触发并重排到未来（验证 next_trigger 推进逻辑）
+  const schedId = 'sched-' + Date.now();
+  db.db.prepare(`INSERT INTO alarms (id,tenant,text,alarm_json,enabled,next_trigger,idempotency_key,webhook_url,created_at,updated_at)
+    VALUES (?,?,?,?,1,?,NULL,NULL,?,?)`).run(
+    schedId, 'testA', 'daily-rearm', JSON.stringify({ time: '08:00', recurrence: 'daily', timezone: 'Asia/Shanghai', label: 'sched', timestamp: Math.floor(Date.now() / 1000) }),
+    Date.now() - 5000, new Date().toISOString(), new Date().toISOString());
+  const rearmed = await waitFor(() => { const a = db.getAlarm('testA', schedId); return a && a.next_trigger && a.next_trigger > Date.now(); }, 5000);
+  assert(rearmed, '调度器：recurring(daily) 到点触发并重排到未来 next_trigger', 'schedId=' + schedId);
+  await req('DELETE', '/v1/alarms/' + schedId, { Authorization: 'Bearer ' + NORMAL_KEY }, null);
+
+  // 投递退避：失败(500)的 Webhook 进入重试（attempt 递增、不误标成功、不双发）
+  const dFailId = db.enqueueDelivery({ tenant: 'testA', url: 'http://localhost:' + RECEIVER_FAIL_PORT, body: '{}', sig: 'x' });
+  const retried = await waitFor(() => {
+    const row = db.db.prepare('SELECT * FROM deliveries WHERE id=?').get(dFailId);
+    return row && row.attempt >= 1 && row.status !== 'success';
+  }, 5000);
+  const failRow = db.db.prepare('SELECT * FROM deliveries WHERE id=?').get(dFailId);
+  assert(retried, '投递退避：失败(500)后进入重试（attempt≥1 且非 success）', JSON.stringify(failRow));
+  assert(failRow && failRow.status !== 'success', '投递退避：失败投递未误标 success', JSON.stringify(failRow));
+
+  // 请求体上限：超大 body(>64KB) 应被拒（413），防止内存耗尽
+  const bigBody = JSON.stringify({ text: 'a'.repeat(70000) });
+  const tooBig = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + NORMAL_KEY }, bigBody);
+  assert(tooBig.status === 413, 'POST /v1/parse 超 64KB 请求体 → 413 payload_too_large', tooBig.status);
+
   // 清空 webhook
   let whc = await req('POST', '/v1/webhook', { Authorization: 'Bearer ' + NORMAL_KEY }, JSON.stringify({ url: '' }));
   assert(whc.status === 200 && JSON.parse(whc.body).url === null, 'POST /v1/webhook 清空 → url=null', whc.status);
@@ -298,6 +336,33 @@ function assert(cond, name, extra) {
   const idxHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
   assert(!/function parseAlarm\(text, opts\)/.test(idxHtml), '前端单一数据源：index.html 不再内联解析引擎（统一走 nlu.js）', 'found inline engine');
   assert(/<script src="nlu\.js"><\/script>/.test(idxHtml), '前端引入 nlu.js 单文件引擎');
+
+  // ---------- App Key 门控（独立进程：启用 ALARM_APP_KEY） ----------
+  console.log('— App Key 门控 —');
+  const APPKEY = 'test-app-key-123';
+  const APPKEY_DB = path.join(DATA, 'test.appkey.db');
+  ['test.appkey.db', 'test.appkey.db-wal', 'test.appkey.db-shm'].forEach(f => { const p = path.join(DATA, f); try { fs.unlinkSync(p); } catch (e) {} });
+  const srv2 = spawn(process.execPath, ['server.js'], { env: { ...process.env, PORT: String(PORT + 1), ALARM_DB: APPKEY_DB, ALARM_APP_KEY: APPKEY }, cwd: __dirname });
+  srv2.stderr.on('data', d => process.stderr.write('[srv2] ' + d));
+  let ready2 = false;
+  for (let i = 0; i < 50; i++) { try { const hh = await req2('GET', '/v1/health', {}); if (hh.status === 200) { ready2 = true; break; } } catch (e) {} await new Promise(r => setTimeout(r, 200)); }
+  if (!ready2) { console.log('  ✗ srv2(ALARM_APP_KEY) 未就绪，跳过 App Key 测试'); }
+  else {
+    let ak1 = await req2('POST', '/api/parse', {}, JSON.stringify({ text: '明天8点' }));
+    assert(ak1.status === 401, 'App Key 门控：/api/parse 无 key → 401', ak1.status);
+    let ak2 = await req2('POST', '/api/parse', { 'x-app-key': APPKEY }, JSON.stringify({ text: '明天8点' }));
+    let ak2j = JSON.parse(ak2.body);
+    assert(ak2.status === 200 && ak2j.success === true, 'App Key 门控：/api/parse 带 key → 200 解析成功', ak2.status);
+    let ak3 = await req2('POST', '/api/parse', { 'x-app-key': 'wrong' }, JSON.stringify({ text: '明天8点' }));
+    assert(ak3.status === 401, 'App Key 门控：错误 key → 401', ak3.status);
+    let akv = await req2('GET', '/api/vapid', {});
+    assert(akv.status === 200 && JSON.parse(akv.body).publicKey, 'App Key 门控：/api/vapid 仍公开 → 200（无需 key）');
+    let akidx = await req2('GET', '/', {});
+    assert(akidx.status === 200 && akidx.body.includes(APPKEY), 'App Key 注入：首页 meta 携带 app-api-key（同源前端自动附带，防跨域白嫖）', akidx.status);
+  }
+  try { srv2.kill('SIGKILL'); } catch (e) {}
+  await new Promise(r => setTimeout(r, 400));
+  ['test.appkey.db', 'test.appkey.db-wal', 'test.appkey.db-shm'].forEach(f => { const p = path.join(DATA, f); try { fs.unlinkSync(p); } catch (e) {} });
 
   console.log('\n结果： ' + pass + ' 通过 / ' + fail + ' 失败');
   await cleanup();
