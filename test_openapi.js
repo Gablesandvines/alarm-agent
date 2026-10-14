@@ -294,6 +294,11 @@ function assert(cond, name, extra) {
   assert(q.status === 402, 'free 套餐超出月度配额(5000) → 402 quota_exceeded', q.status);
   db.db.prepare('UPDATE usage SET parse_count = 0 WHERE key = ?').run(NORMAL_KEY); // 复位，避免影响后续
 
+  // 前端单一数据源：index.html 不得再内联 parseAlarm 引擎，必须统一引入 nlu.js（防引擎漂移）
+  const idxHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  assert(!/function parseAlarm\(text, opts\)/.test(idxHtml), '前端单一数据源：index.html 不再内联解析引擎（统一走 nlu.js）', 'found inline engine');
+  assert(/<script src="nlu\.js"><\/script>/.test(idxHtml), '前端引入 nlu.js 单文件引擎');
+
   console.log('\n结果： ' + pass + ' 通过 / ' + fail + ' 失败');
   await cleanup();
   process.exit(fail ? 1 : 0);
