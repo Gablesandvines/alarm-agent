@@ -44,27 +44,70 @@ function addDays(y, mo, d, n) {
 function daysInMonth(y, mo) { return new Date(Date.UTC(y, mo, 0)).getUTCDate(); }
 function weekdayOf(y, mo, d) { return new Date(Date.UTC(y, mo - 1, d)).getUTCDay(); }
 
+// ---------- 中国法定节假日 / 调休（工作日闹钟感知） ----------
+// 数据来源：国务院办公厅每年发布的放假安排通知。2026 为官方权威数据；
+// 2027 为「预设」（国务院通常于前一年 11-12 月公布，届时请以官方通知校准，尤其调休补班日）。
+// 格式：月-日（数字，不补零）。off = 放假（含放假调休日，一律非工作日）；work = 调休补班（周末上班，算工作日）。
+const HOLIDAYS = {
+  2026: {
+    off: ['1-1', '1-2', '1-3', '2-15', '2-16', '2-17', '2-18', '2-19', '2-20', '2-21', '2-22', '2-23',
+          '4-4', '4-5', '4-6', '5-1', '5-2', '5-3', '5-4', '5-5', '6-19', '6-20', '6-21',
+          '9-25', '9-26', '9-27', '10-1', '10-2', '10-3', '10-4', '10-5', '10-6', '10-7'],
+    work: ['1-4', '2-14', '2-28', '5-9', '9-20', '10-10']
+  },
+  // 2027 预设（未定稿）：春节 2/5-2/12、劳动 5/1-5/5、国庆 10/1-10/7 等；调休待国务院公布后补全。
+  2027: {
+    off: ['1-1', '2-5', '2-6', '2-7', '2-8', '2-9', '2-10', '2-11', '2-12', '4-5',
+          '5-1', '5-2', '5-3', '5-4', '5-5', '6-9', '9-15', '10-1', '10-2', '10-3', '10-4', '10-5', '10-6', '10-7'],
+    work: []
+  }
+};
+const _HOLIDAYS_OFF = new Set();
+const _HOLIDAYS_WORK = new Set();
+function _rebuildHolidaySets() {
+  _HOLIDAYS_OFF.clear(); _HOLIDAYS_WORK.clear();
+  for (const y in HOLIDAYS) {
+    (HOLIDAYS[y].off || []).forEach(md => _HOLIDAYS_OFF.add(y + '-' + md));
+    (HOLIDAYS[y].work || []).forEach(md => _HOLIDAYS_WORK.add(y + '-' + md));
+  }
+}
+_rebuildHolidaySets();
+// 扩展/覆盖某年节假日（便于每年更新，或单元测试注入覆盖）
+function setHolidays(year, off, work) { HOLIDAYS[year] = { off: off || [], work: work || [] }; _rebuildHolidaySets(); }
+
+// 某日是否为「法定工作日」：调休补班(周末上班)→true；法定假日→false；其余按周一~周五。
+function isWorkday(y, mo, d) {
+  const key = y + '-' + mo + '-' + d;
+  if (_HOLIDAYS_WORK.has(key)) return true;
+  if (_HOLIDAYS_OFF.has(key)) return false;
+  const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+  return dow !== 0 && dow !== 6;
+}
+
 // 把闹钟子对象换算成下一次触发的毫秒时间戳
-function nextTriggerMs(alarm) {
+function nextTriggerMs(alarm, nowOverride) {
   const rec = alarm.recurrence || 'none';
   const tz = alarm.timezone || 'Asia/Shanghai';
+  const lead = (alarm.lead_minutes || 0) * 60000;
   if (rec === 'none') {
-    if (alarm.timestamp) return alarm.timestamp * 1000;
+    if (alarm.timestamp) return alarm.timestamp * 1000; // 解析路径：timestamp 已含提前量
     if (alarm.date && alarm.time) {
       const [Y, M, D] = alarm.date.split('-').map(Number);
       const [hh, mm] = alarm.time.split(':').map(Number);
-      return wallToEpoch(Y, M, D, hh, mm, tz);
+      return wallToEpoch(Y, M, D, hh, mm, tz) - lead; // 显式路径：在此扣除提前量
     }
     return null;
   }
-  const anchor = (alarm.timestamp || Math.floor(Date.now() / 1000)) * 1000;
-  return computeNext(alarm.time, rec, anchor, tz);
+  const anchor = (alarm.timestamp || Math.floor((nowOverride || Date.now()) / 1000)) * 1000;
+  const base = computeNext(alarm.time, rec, anchor, tz, nowOverride);
+  if (base == null) return null;
+  return base - lead; // 重复闹钟同样提前 lead 分钟触发
 }
 
 // 计算下一次触发（时区感知，支持夏令时 + 月度）。以「时区内的日历日」为步进，避免本地与闹钟时区错位。
-function computeNext(time, recurrence, anchorTs, timezone) {
+function computeNext(time, recurrence, anchorTs, timezone, nowOverride) {
   const tz = timezone || 'Asia/Shanghai';
-  const now = Date.now();
+  const now = nowOverride != null ? nowOverride : Date.now();
   const [hh, mm] = time.split(':').map(Number);
   if (recurrence === 'none') return null;
   if (!/^\d{1,2}:\d{2}$/.test(time)) return null;
@@ -76,7 +119,7 @@ function computeNext(time, recurrence, anchorTs, timezone) {
   }
   if (recurrence === 'weekdays') {
     let cur = tzDateParts(now, tz); let t = at(cur.y, cur.mo, cur.d), g = 0;
-    while ((weekdayOf(cur.y, cur.mo, cur.d) === 0 || weekdayOf(cur.y, cur.mo, cur.d) === 6 || t < now) && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
+    while ((!isWorkday(cur.y, cur.mo, cur.d, tz) || t < now) && g < 400) { cur = addDays(cur.y, cur.mo, cur.d, 1); t = at(cur.y, cur.mo, cur.d); g++; }
     return t;
   }
   if (recurrence === 'weekend') {
@@ -129,5 +172,8 @@ function wallClockAt(epoch, tz) {
 
 module.exports = {
   tzOffsetAt, wallToEpoch, tzDateParts, addDays, daysInMonth, weekdayOf,
-  nextTriggerMs, computeNext, wallClockAt
+  nextTriggerMs, computeNext, wallClockAt, isWorkday, setHolidays, HOLIDAYS
 };
+if (typeof window !== 'undefined') {
+  window.Scheduler = { tzOffsetAt, wallToEpoch, tzDateParts, addDays, daysInMonth, weekdayOf, nextTriggerMs, computeNext, wallClockAt, isWorkday, setHolidays, HOLIDAYS };
+}

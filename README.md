@@ -11,6 +11,8 @@
 - **自然语言解析**：中文口语 → 结构化闹钟 JSON（规则引擎优先，可选 LLM 长尾兜底）。
 - **托管闹钟**：服务端到点自动触发，无需你自己跑定时器。
 - **时区与夏令时安全**：重复闹钟（每天 / 工作日 / 周末 / 每周 X / 每 N 天 / 双周 X / 每月 N 号）按闹钟时区计算下次触发，跨夏令时切换日墙钟时间不漂移。
+- **中国法定节假日感知**：`工作日` 闹钟自动跳过元旦 / 春节 / 清明 / 劳动 / 端午 / 中秋 / 国庆等法定假期，并包含调休补班周末（数据随国务院办公厅每年放假通知更新，见 `scheduler.js` 的 `HOLIDAYS`）。
+- **提前提醒（lead_minutes）**：单次与重复闹钟均支持「提前 N 分钟」触发——服务端重排已修正此前重复闹钟提前提醒失效的问题。
 - **Webhook 投递**：触发时向你的回调地址投递 `alarm.fired` 事件，附带 **HMAC-SHA256 签名**，可验真伪。
 - **多租户 API Key**：Bearer 鉴权、按 key 限流（计数持久化，重启不丢）、租户数据隔离。
 - **可观测性**：结构化 JSON 日志 + `/v1/metrics` 指标（解析耗时、Webhook 投递成功率），便于接入日志 / 监控系统。
@@ -202,8 +204,8 @@ curl http://localhost:8080/v1/usage -H "Authorization: Bearer <你的KEY>"
 
 ```bash
 node tests/run.js        # 解析引擎回归（66 例，含多轮追问/矛盾检测/每月重复）
-node tests/scheduler.js  # 调度/时区回归（17 例，含美东 DST 春进/秋退墙钟稳定、daily/monthly 重排）
-npm test                # 上述两套 + 开放 API 集成测试（67 例，含密钥隔离、配额、Webhook 投递与验签、崩溃恢复、原子抢占、指标边界、调度重排、投递退避、App Key 门控）
+node tests/scheduler.js  # 调度/时区回归（28 例，含美东 DST 春进/秋退墙钟稳定、daily/monthly 重排、节假日感知工作日、提前提醒）
+npm test                # 上述两套 + 开放 API 集成测试（69 例，含密钥隔离、配额、Webhook 投递与验签、崩溃恢复、原子抢占、指标边界、调度重排、提前提醒、投递退避、App Key 门控）
 ```
 
 集成测试使用独立 `test.alarm.db`，不会污染你的 `data/`。
@@ -220,6 +222,7 @@ CI（GitHub Actions）在每次 push/PR 到 `main` 时自动运行上述两组�
 4. **SQLite 单文件**：中等规模足够，规模上来后换成 Postgres（见 `deploy.md`）。
 5. **错过宽限 2 分钟**：触发点 ±2 分钟外的事件静默丢弃。
 6. **两套闹钟模型并存（设计如此，非冗余）**：参考 App（`legacy_alarms` + 浏览器 Web Push 订阅）服务于「关页也能响」的演示；开放平台（`alarms` + Webhook）服务于服务端业务触发。二者走**不同投递通道**（Web Push vs Webhook），仅触发计算（`computeNext`/`nextTriggerMs`）共享同一引擎（见 `scheduler.js`）。
+7. **节假日数据为权威 2026 + 2027 预设**：2026 为国务院办公厅官方数据；2027 为「预设」（国务院通常于前一年 11-12 月公布，届时请以官方通知校准，尤其调休补班日）。更新只需改 `scheduler.js` 的 `HOLIDAYS`（或运行时调用 `setHolidays`）。
 
 ---
 

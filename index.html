@@ -56,6 +56,8 @@
   .sw::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;background:#fff;border-radius:50%;transition:.2s}
   .sw.on::after{left:20px}
   .del{background:transparent;border:1px solid #f0caca;color:var(--bad);border-radius:8px;padding:5px 10px;font-size:13px;cursor:pointer;flex:0 0 auto}
+  .edit{background:#eef2ff;color:var(--brand);border:1px solid #dbe4ff;border-radius:8px;padding:5px 10px;font-size:13px;cursor:pointer;flex:0 0 auto}
+  .item.editing{flex-wrap:wrap}
   .perm{display:flex;align-items:center;gap:10px;font-size:13.5px}
   .perm .st{font-weight:600}
   .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#1f2533;color:#fff;padding:11px 18px;border-radius:12px;font-size:14px;box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:.25s;z-index:50}
@@ -158,11 +160,13 @@
 <div class="toast" id="toast"></div>
 
 <script src="nlu.js"></script>
+<script src="scheduler.js"></script>
 <script>
 const STORE='alarm_agent_alarms';
 let alarms=[];
 let currentParsed=null; let currentSource='rule';
 let pendingRaw=null, pendingOrigin=null, pendingContext=null;  // 多轮澄清：原始输入、首次意图、已理解的锚点(partial)
+let editingId=null;                                          // 内联编辑中的闹钟 id
 function load(){ try{ alarms=JSON.parse(localStorage.getItem(STORE))||[]; }catch(e){ alarms=[]; } }
 function save(){ localStorage.setItem(STORE, JSON.stringify(alarms)); }
 
@@ -171,16 +175,24 @@ const WD=['周日','周一','周二','周三','周四','周五','周六'];
 function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
 
 function computeNextTrigger(a){
+  const lead=(a.lead_minutes||0)*60000;
+  if(a.recurrence==='none'){
+    if(a.timestamp){ const ts=a.timestamp*1000; return ts>=Date.now()?ts:null; }
+    return null;
+  }
+  // 重复闹钟：委托 scheduler.js（节假日感知 + 时区/DST 安全），并提前 lead 分钟触发
+  if(typeof Scheduler!=='undefined'){
+    const base=Scheduler.computeNext(a.time, a.recurrence, (a.timestamp||Math.floor(Date.now()/1000))*1000, a.timezone||'Asia/Shanghai');
+    return base==null?null:base-lead;
+  }
+  // 兜底：无 scheduler 时的极简本地逻辑（不含节假日/时区）
   const now=Date.now();
   const [hh,mm]=a.time.split(':').map(Number);
   const at=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate(),hh,mm,0,0).getTime();
-  if(a.recurrence==='none'){ const ts=a.timestamp*1000; return ts>=now?ts:null; }
-  if(a.recurrence==='daily'){ let t=at(new Date()); while(t<now) t+=86400000; return t; }
-  if(a.recurrence==='weekdays'){ let t=at(new Date()),g=0; while(([0,6].includes(new Date(t).getDay())||t<now)&&g<12){t+=86400000;g++;} return t; }
-  if(a.recurrence==='weekend'){ let t=at(new Date()),g=0; while((![0,6].includes(new Date(t).getDay())||t<now)&&g<12){t+=86400000;g++;} return t; }
-  if(a.recurrence.startsWith('weekly:')){ const w=parseInt(a.recurrence.split(':')[1],10); let t=at(new Date()),g=0; while((new Date(t).getDay()!==w||t<now)&&g<12){t+=86400000;g++;} return t; }
-  if(a.recurrence.startsWith('every:')){ const n=parseInt(a.recurrence.split(':')[1],10)||1; let t=a.timestamp*1000,g=0; while(g<500){ const d=new Date(t); const cand=at(new Date(d.getFullYear(),d.getMonth(),d.getDate())); if(cand>=now) return cand; t+=n*86400000; g++; } return null; }
-  if(a.recurrence.startsWith('biweekly:')){ const w=parseInt(a.recurrence.split(':')[1],10); const EPOCH=Date.UTC(2024,0,1); const monOf=ts=>{const x=new Date(ts);const o=(x.getDay()+6)%7;x.setDate(x.getDate()-o);x.setHours(0,0,0,0);return x.getTime();}; let t=at(new Date(a.timestamp*1000)),g=0; while(g<60){const dow=new Date(t).getDay();const wk=Math.round((monOf(t)-monOf(EPOCH))/(7*86400000)); if(dow===w&&t>=now&&wk%2===0) return t; t+=86400000;g++;} return null; }
+  if(a.recurrence==='daily'){ let t=at(new Date()); while(t<now) t+=86400000; return t-lead; }
+  if(a.recurrence==='weekdays'){ let t=at(new Date()),g=0; while(([0,6].includes(new Date(t).getDay())||t<now)&&g<12){t+=86400000;g++;} return t-lead; }
+  if(a.recurrence==='weekend'){ let t=at(new Date()),g=0; while((![0,6].includes(new Date(t).getDay())||t<now)&&g<12){t+=86400000;g++;} return t-lead; }
+  if(a.recurrence.startsWith('weekly:')){ const w=parseInt(a.recurrence.split(':')[1],10); let t=at(new Date()),g=0; while((new Date(t).getDay()!==w||t<now)&&g<12){t+=86400000;g++;} return t-lead; }
   return null;
 }
 function fmtNext(ms){
@@ -248,21 +260,71 @@ function renderList(){
   if(!alarms.length){ list.innerHTML='<div class="empty">还没有闹钟，先解析一句话试试。</div>'; return; }
   list.innerHTML='';
   alarms.forEach(a=>{
+    if(a.id===editingId){ list.appendChild(buildEditRow(a)); return; }
     const nt=computeNextTrigger(a);
     const div=document.createElement('div');
     div.className='item'+(a.enabled?'':' off');
+    const leadTxt=(a.lead_minutes>0)?` · 提前${a.lead_minutes}分`:'';
     div.innerHTML=`
       <div class="t">${a.time}</div>
       <div class="meta">
         <div class="lab">${a.label}</div>
-        <div class="sub">${recLabel(a.recurrence)} · 下次：${a.enabled?fmtNext(nt):'已停用'} <span class="pill rec">#${a.timestamp}</span></div>
+        <div class="sub">${recLabel(a.recurrence)} · 下次：${a.enabled?fmtNext(nt):'已停用'}${leadTxt} <span class="pill rec">#${a.timestamp}</span></div>
       </div>
       <div class="sw ${a.enabled?'on':''}" data-id="${a.id}"></div>
+      <button class="edit" data-id="${a.id}">编辑</button>
       <button class="del" data-id="${a.id}">删除</button>`;
     list.appendChild(div);
   });
   list.querySelectorAll('.sw').forEach(s=>s.onclick=()=>toggle(s.dataset.id));
   list.querySelectorAll('.del').forEach(b=>b.onclick=()=>del(b.dataset.id));
+  list.querySelectorAll('.edit').forEach(b=>b.onclick=()=>startEdit(b.dataset.id));
+}
+function startEdit(id){ editingId=id; renderList(); }
+function buildEditRow(a){
+  const div=document.createElement('div');
+  div.className='item editing';
+  const recOpts=[['none','单次'],['daily','每天'],['weekdays','工作日'],['weekend','周末'],
+    ['weekly:0','每周日'],['weekly:1','每周一'],['weekly:2','每周二'],['weekly:3','每周三'],['weekly:4','每周四'],['weekly:5','每周五'],['weekly:6','每周六']]
+    .map(([v,t])=>`<option value="${v}" ${a.recurrence===v?'selected':''}>${t}</option>`).join('');
+  div.innerHTML=`
+    <div class="meta" style="flex:1;min-width:0">
+      <div class="row" style="margin:0;gap:8px">
+        <input type="time" id="edTime" value="${a.time}" style="flex:1;max-width:130px">
+        <select id="edRec" style="flex:1;max-width:120px">${recOpts}</select>
+      </div>
+      <input id="edLabel" value="${a.label}" placeholder="备注" style="width:100%;margin-top:8px;box-sizing:border-box">
+      <div class="row" style="margin:8px 0 0;gap:6px;align-items:center">
+        <span style="font-size:12px;color:var(--sub)">提前</span>
+        <input type="number" id="edLead" value="${a.lead_minutes||0}" min="0" max="1440" style="flex:0 0 64px">
+        <span style="font-size:12px;color:var(--sub)">分钟</span>
+      </div>
+    </div>
+    <button class="edit" id="edSave">保存</button>
+    <button class="del" id="edCancel">取消</button>`;
+  div.querySelector('#edSave').onclick=()=>commitEdit(a.id);
+  div.querySelector('#edCancel').onclick=()=>{ editingId=null; renderList(); };
+  return div;
+}
+function commitEdit(id){
+  const a=alarms.find(x=>x.id===id); if(!a) return;
+  const newTime=document.querySelector('#edTime').value||a.time;
+  const newRec=document.querySelector('#edRec').value;
+  const newLabel=(document.querySelector('#edLabel').value||'').trim();
+  const newLead=Math.max(0,parseInt(document.querySelector('#edLead').value,10)||0);
+  const oldSnap={...a};
+  a.label=newLabel; a.recurrence=newRec; a.lead_minutes=newLead;
+  if(newRec==='none'){
+    const [hh,mm]=newTime.split(':').map(Number);
+    const now=new Date();
+    let d=new Date(now.getFullYear(),now.getMonth(),now.getDate(),hh,mm,0,0);
+    if(d.getTime()<=now.getTime()) d.setDate(d.getDate()+1);
+    a.date=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    a.time=newTime; a.timestamp=Math.floor(d.getTime()/1000);
+  } else { a.time=newTime; }
+  save(); editingId=null; renderList();
+  syncAlarmToServer('remove', oldSnap);
+  syncAlarmToServer('add', a);
 }
 
 async function doParse(){
@@ -304,14 +366,14 @@ function saveAlarm(){
     id:'a'+Date.now()+Math.floor(Math.random()*1000),
     raw:currentParsed.raw, timestamp:a.timestamp, datetime:a.datetime,
     date:a.date, time:a.time, recurrence:a.recurrence, timezone:a.timezone,
-    label:a.label, enabled:true, createdAt:Date.now()
+    label:a.label, lead_minutes:a.lead_minutes||0, enabled:true, createdAt:Date.now()
   };
   alarms.unshift(item); save(); renderList();
   toast('已保存闹钟 ✓'); $('saveHint').textContent='下次响铃：'+fmtNext(computeNextTrigger(item));
   syncAlarmToServer('add',item);
 }
 function toggle(id){ const a=alarms.find(x=>x.id===id); if(a){ a.enabled=!a.enabled; save(); renderList(); } }
-function del(id){ const item=alarms.find(x=>x.id===id); alarms=alarms.filter(x=>x.id!==id); save(); renderList(); toast('已删除'); if(item) syncAlarmToServer('remove',item); }
+function del(id){ const item=alarms.find(x=>x.id===id); alarms=alarms.filter(x=>x.id!==id); editingId=null; save(); renderList(); toast('已删除'); if(item) syncAlarmToServer('remove',item); }
 
 let audioCtx=null;
 function ensureAudio(){ if(!audioCtx){ try{ audioCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(audioCtx&&audioCtx.state==='suspended') audioCtx.resume(); }
@@ -385,7 +447,7 @@ async function enablePush(){
 async function syncAlarmToServer(action,item){
   if(!pushActive||!clientId) return;
   try{
-    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label})}); }
+    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0})}); }
     else if(action==='remove'){ await fetch('/api/alarm/remove',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id})}); }
   }catch(e){ /* 离线：本地仍兜底调度 */ }
 }

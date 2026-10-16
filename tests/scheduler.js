@@ -6,7 +6,7 @@
  *   - nextTriggerMs：一次性（date+time）按闹钟时区换算
  *   - 重复重排：daily / monthly:N 给出未来触发且墙钟正确
  */
-const { nextTriggerMs, computeNext, wallClockAt } = require('../scheduler.js');
+const { nextTriggerMs, computeNext, wallClockAt, isWorkday } = require('../scheduler.js');
 
 let pass = 0, fail = 0;
 function assert(cond, name, extra) {
@@ -73,6 +73,38 @@ console.log('— 调度/时区回归 —');
   assert(computeNext('ab:cd', 'daily', Date.now(), 'Asia/Shanghai') === null, '非法时间格式（非数字）→ null');
   assert(computeNext('08:00', 'none', Date.now(), 'Asia/Shanghai') === null, 'recurrence=none → null');
   assert(nextTriggerMs({ recurrence: 'none' }) === null, 'nextTriggerMs 无 date/time/timestamp → null');
+}
+
+// 6) 节假日感知工作日（2026 权威数据）：跳过法定假日、包含调休补班周末
+{
+  const tz = 'Asia/Shanghai';
+  assert(isWorkday(2026, 5, 1, tz) === false, '2026-05-01 劳动节 → 非工作日');
+  assert(isWorkday(2026, 5, 9, tz) === true, '2026-05-09 调休补班(周六) → 工作日');
+  assert(isWorkday(2026, 10, 10, tz) === true, '2026-10-10 调休补班(周六) → 工作日');
+  assert(isWorkday(2026, 5, 6, tz) === true, '2026-05-06 周三 → 工作日');
+  assert(isWorkday(2026, 5, 2, tz) === false, '2026-05-02 劳动节假期(周六) → 非工作日');
+  // 锚点 2026-05-01(周五, 劳动节假期) 09:00 上海 → 下一个工作日为 05-06(周三)
+  const now1 = Date.UTC(2026, 4, 1, 1, 0, 0);
+  const t1 = computeNext('08:00', 'weekdays', 0, tz, now1);
+  assert(wallDateAt(t1, tz) === '2026-05-06', 'weekdays 跳过劳动节假期 → 2026-05-06', wallDateAt(t1, tz));
+  assert(wallClockAt(t1, tz) === '08:00', 'weekdays 墙钟=08:00', wallClockAt(t1, tz));
+  // 锚点 2026-05-08(周五) 09:00 上海 → 当天 08:00 已过 → 下一个工作日是 05-09(周六, 调休补班)
+  const now2 = Date.UTC(2026, 4, 8, 1, 0, 0);
+  const t2 = computeNext('08:00', 'weekdays', 0, tz, now2);
+  assert(wallDateAt(t2, tz) === '2026-05-09', 'weekdays 包含调休补班(05-09) → 2026-05-09', wallDateAt(t2, tz));
+}
+
+// 7) nextTriggerMs：daily + lead_minutes → 触发时间 = 墙钟 - lead（提前提醒，修复重复闹钟失效）
+{
+  const tz = 'Asia/Shanghai';
+  const now = Date.UTC(2026, 5, 10, 1, 0, 0); // 2026-06-10 09:00 上海
+  const t = nextTriggerMs({ time: '08:00', recurrence: 'daily', timezone: tz, lead_minutes: 30 }, now);
+  assert(wallDateAt(t, tz) === '2026-06-11', 'daily+lead 触发日=次日', wallDateAt(t, tz));
+  assert(wallClockAt(t, tz) === '07:30', 'daily+lead 墙钟=07:30（提前30分）', wallClockAt(t, tz));
+  // 单次(解析路径：timestamp 已含 lead) 不应二次扣除
+  const ts0 = Math.floor(Date.UTC(2026, 5, 10, 0, 30, 0) / 1000);
+  const ts = nextTriggerMs({ time: '08:00', recurrence: 'none', timezone: tz, timestamp: ts0 }, now);
+  assert(Math.abs(ts - Date.UTC(2026, 5, 10, 0, 30, 0)) < 1000, 'none+timestamp 路径不二次扣除 lead', String(ts));
 }
 
 console.log('\n结果： ' + pass + ' 通过 / ' + fail + ' 失败');

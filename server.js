@@ -538,7 +538,7 @@ async function handleApi(req, res) {
         clientId: body.clientId,
         subscription: sub ? sub.subscription : body.subscription,
         timestamp: body.timestamp, time: body.time, recurrence: body.recurrence || 'none',
-        label: body.label || '', fired: false, nextTrigger: (body.timestamp || 0) * 1000
+        label: body.label || '', lead_minutes: body.lead_minutes || 0, fired: false, nextTrigger: (body.timestamp || 0) * 1000
       };
       db.saveLegacyAlarm(alarm);
       console.log('[alarm] 已登记', alarm.id, alarm.time, alarm.recurrence);
@@ -609,7 +609,10 @@ setInterval(() => {
       });
     }
     if (a.recurrence === 'none') a.fired = true;
-    else a.nextTrigger = computeNext(a.time, a.recurrence, a.timestamp * 1000);
+    else {
+      const base = computeNext(a.time, a.recurrence, a.timestamp * 1000);
+      a.nextTrigger = base == null ? 0 : base - (a.lead_minutes || 0) * 60000;
+    }
     db.saveLegacyAlarm(a);
   }
   // 平台托管闹钟：状态推进 + Webhook 投递（Phase 3 + 持久化队列）
@@ -620,7 +623,7 @@ setInterval(() => {
     if (wh && keyRec) enqueueWebhookDelivery(keyRec.key, wh, a, now);
     if (keyRec) bumpUsage(keyRec.key, 'fire_count');
     if (a.alarm.recurrence === 'none') a.next_trigger = null;
-    else a.next_trigger = computeNext(a.alarm.time, a.alarm.recurrence, (a.alarm.timestamp || Math.floor(now / 1000)) * 1000);
+    else a.next_trigger = nextTriggerMs(a.alarm);
     a.updated_at = new Date().toISOString();
     db.saveAlarm(a);
   }

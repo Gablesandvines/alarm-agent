@@ -23,6 +23,7 @@ process.env.ALARM_DB = TEST_DB;
 
 // 用 db.js（指向 test.alarm.db）初始化一份全新库，并注入测试密钥（多租户，用于隔离验证 + 限流验证）
 const db = require('./db.js');
+const { computeNext } = require('./scheduler.js');
 db.db.prepare('DELETE FROM keys').run(); // 清空（含示例/迁移密钥），仅保留下列测试密钥
 const kN = db.createKey({ tenant: 'testA', label: 'normal', rate_limit: 100, plan: 'free' });
 const kO = db.createKey({ tenant: 'testB', label: 'other', rate_limit: 100, plan: 'free' });
@@ -277,6 +278,15 @@ function assert(cond, name, extra) {
   const rearmed = await waitFor(() => { const a = db.getAlarm('testA', schedId); return a && a.next_trigger && a.next_trigger > Date.now(); }, 5000);
   assert(rearmed, '调度器：recurring(daily) 到点触发并重排到未来 next_trigger', 'schedId=' + schedId);
   await req('DELETE', '/v1/alarms/' + schedId, { Authorization: 'Bearer ' + NORMAL_KEY }, null);
+
+  // 重复 + 提前提醒：daily 带 lead_minutes，next_trigger 应为「墙钟 - lead」（修复此前重复闹钟提前提醒失效）
+  const leadId = 'lead-' + Date.now();
+  const leadReq = await req('POST', '/v1/alarms', { Authorization: 'Bearer ' + NORMAL_KEY }, JSON.stringify({ time: '07:45', recurrence: 'daily', lead_minutes: 30, label: 'lead-test', idempotency_key: leadId }));
+  const leadj = JSON.parse(leadReq.body);
+  assert(leadReq.status === 201 && leadj.alarm.lead_minutes === 30, 'POST /v1/alarms(daily+lead_minutes) → 201 且 lead_minutes=30', leadReq.status);
+  const wall = computeNext('07:45', 'daily', Date.now(), 'Asia/Shanghai');
+  assert(Math.abs(leadj.next_trigger - (wall - 30 * 60000)) < 2000, 'daily+lead: next_trigger = 墙钟 - 30min（提前提醒生效）', JSON.stringify({ got: leadj.next_trigger, exp: wall - 1800000 }));
+  await req('DELETE', '/v1/alarms/' + leadj.id, { Authorization: 'Bearer ' + NORMAL_KEY }, null);
 
   // 投递退避：失败(500)的 Webhook 进入重试（attempt 递增、不误标成功、不双发）
   const dFailId = db.enqueueDelivery({ tenant: 'testA', url: 'http://localhost:' + RECEIVER_FAIL_PORT, body: '{}', sig: 'x' });

@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS legacy_alarms (
   time TEXT,
   recurrence TEXT,
   label TEXT,
+  lead_minutes INTEGER NOT NULL DEFAULT 0,
   fired INTEGER NOT NULL DEFAULT 0,
   next_trigger INTEGER
 );
@@ -139,6 +140,8 @@ CREATE TABLE IF NOT EXISTS metrics (
 migrateKeysSchema();
 // deliveries 表补充 updated_at（崩溃恢复与终态清理依赖），旧库自动 ALTER
 migrateDeliveriesSchema();
+// legacy_alarms 表补充 lead_minutes（重复闹钟提前提醒依赖），旧库自动 ALTER
+migrateLegacyAlarmsSchema();
 
 // ---------- 行 <-> 对象 归一 ----------
 function rowToKey(r) {
@@ -271,15 +274,16 @@ function listLegacyAlarms() {
   return db.prepare('SELECT * FROM legacy_alarms').all().map(r => ({
     id: r.id, clientId: r.client_id, subscription: r.subscription_json ? JSON.parse(r.subscription_json) : null,
     timestamp: r.timestamp, time: r.time, recurrence: r.recurrence, label: r.label,
+    lead_minutes: r.lead_minutes || 0,
     fired: !!r.fired, nextTrigger: r.next_trigger
   }));
 }
 function saveLegacyAlarm(a) {
   db.prepare(`INSERT OR REPLACE INTO legacy_alarms
-    (id, client_id, subscription_json, timestamp, time, recurrence, label, fired, next_trigger)
-    VALUES (?,?,?,?,?,?,?,?,?)`)
+    (id, client_id, subscription_json, timestamp, time, recurrence, label, lead_minutes, fired, next_trigger)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(a.id, a.clientId, a.subscription ? JSON.stringify(a.subscription) : null, a.timestamp || 0,
-      a.time, a.recurrence || 'none', a.label || '', a.fired ? 1 : 0, a.nextTrigger || 0);
+      a.time, a.recurrence || 'none', a.label || '', a.lead_minutes || 0, a.fired ? 1 : 0, a.nextTrigger || 0);
 }
 function deleteLegacyAlarm(clientId, id) {
   return db.prepare('DELETE FROM legacy_alarms WHERE client_id = ? AND id = ?').run(clientId, id).changes > 0;
@@ -389,6 +393,14 @@ function migrateDeliveriesSchema() {
   const cols = db.prepare('PRAGMA table_info(deliveries)').all().map(c => c.name);
   if (!cols.includes('updated_at')) {
     db.exec("ALTER TABLE deliveries ADD COLUMN updated_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
+  }
+}
+
+// legacy_alarms 表补充 lead_minutes 列（重复闹钟「提前提醒」依赖；旧库 ALTER 补齐）
+function migrateLegacyAlarmsSchema() {
+  const cols = db.prepare('PRAGMA table_info(legacy_alarms)').all().map(c => c.name);
+  if (!cols.includes('lead_minutes')) {
+    db.exec('ALTER TABLE legacy_alarms ADD COLUMN lead_minutes INTEGER NOT NULL DEFAULT 0');
   }
 }
 
