@@ -105,6 +105,26 @@ function check(c) {
     }
     if (e.lead !== undefined && a.lead_minutes !== e.lead)
       errs.push(`lead_minutes 期望 ${e.lead} 实得 ${a.lead_minutes}`);
+    // 重复终止条件（P1）：end 结构断言
+    if (e.endType !== undefined) {
+      if (!a.end || a.end.type !== e.endType)
+        errs.push(`end.type 期望 "${e.endType}" 实得 ${a.end ? a.end.type : 'null'}`);
+    }
+    if (e.endDate !== undefined) {
+      if (!a.end || a.end.date !== e.endDate)
+        errs.push(`end.date 期望 "${e.endDate}" 实得 ${a.end ? a.end.date : 'null'}`);
+    }
+    if (e.endDays !== undefined) {
+      if (!a.end || a.end.days !== e.endDays)
+        errs.push(`end.days 期望 ${e.endDays} 实得 ${a.end ? a.end.days : 'null'}`);
+    }
+    if (e.endCount !== undefined) {
+      if (!a.end || a.end.count !== e.endCount)
+        errs.push(`end.count 期望 ${e.endCount} 实得 ${a.end ? a.end.count : 'null'}`);
+    }
+    if (e.endNull !== undefined) {
+      if (a.end !== null) errs.push(`end 应为 null（实得 ${JSON.stringify(a.end)}）`);
+    }
     if (e.nextOccurrenceMD) {
       const [em, ed] = e.nextOccurrenceMD;
       const t = new Date();

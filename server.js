@@ -14,7 +14,7 @@ const path = require('path');
 const webpush = require('web-push');
 const crypto = require('crypto');
 const { parseAlarm } = require('./nlu.js');
-const { computeNext, nextTriggerMs } = require('./scheduler.js');
+const { computeNext, nextTriggerMs, endExceeded } = require('./scheduler.js');
 
 const ROOT = __dirname;
 const DATA = path.join(ROOT, 'data');
@@ -538,7 +538,8 @@ async function handleApi(req, res) {
         clientId: body.clientId,
         subscription: sub ? sub.subscription : body.subscription,
         timestamp: body.timestamp, time: body.time, recurrence: body.recurrence || 'none',
-        label: body.label || '', lead_minutes: body.lead_minutes || 0, fired: false, nextTrigger: (body.timestamp || 0) * 1000
+        label: body.label || '', lead_minutes: body.lead_minutes || 0,
+        end: body.end || null, fired: false, fired_count: body.fired_count || 0, nextTrigger: (body.timestamp || 0) * 1000
       };
       db.saveLegacyAlarm(alarm);
       console.log('[alarm] 已登记', alarm.id, alarm.time, alarm.recurrence);
@@ -595,8 +596,14 @@ setInterval(() => {
   // 参考 App 本地闹钟（Web Push）
   for (const a of db.listLegacyAlarms()) {
     if (!a.nextTrigger || a.fired || a.nextTrigger > now) continue;
+    const tz = a.timezone || 'Asia/Shanghai';
     if (now - a.nextTrigger > MISS_GRACE) { // 错过
-      if (a.recurrence === 'none') a.fired = true; else a.nextTrigger = computeNext(a.time, a.recurrence, a.timestamp * 1000);
+      if (a.recurrence === 'none') a.fired = true;
+      else {
+        const base = computeNext(a.time, a.recurrence, a.timestamp * 1000, tz);
+        const ended = base == null || endExceeded({ time: a.time, recurrence: a.recurrence, timestamp: a.timestamp, end: a.end, lead_minutes: a.lead_minutes }, base, tz);
+        a.fired = ended; a.nextTrigger = ended ? 0 : base - (a.lead_minutes || 0) * 60000;
+      }
       db.saveLegacyAlarm(a); continue;
     }
     if (a.subscription) {
@@ -610,8 +617,14 @@ setInterval(() => {
     }
     if (a.recurrence === 'none') a.fired = true;
     else {
-      const base = computeNext(a.time, a.recurrence, a.timestamp * 1000);
-      a.nextTrigger = base == null ? 0 : base - (a.lead_minutes || 0) * 60000;
+      const base = computeNext(a.time, a.recurrence, a.timestamp * 1000, tz);
+      const ended = base == null || endExceeded({ time: a.time, recurrence: a.recurrence, timestamp: a.timestamp, end: a.end, lead_minutes: a.lead_minutes }, base, tz);
+      a.fired = ended; a.nextTrigger = ended ? 0 : base - (a.lead_minutes || 0) * 60000;
+      // 次数终止：每次触发累加，达到上限即停
+      if (a.end && a.end.type === 'count') {
+        a.fired_count = (a.fired_count || 0) + 1;
+        if (a.fired_count >= a.end.count) { a.fired = true; a.nextTrigger = 0; }
+      }
     }
     db.saveLegacyAlarm(a);
   }
@@ -622,8 +635,16 @@ setInterval(() => {
     const wh = a.webhook_url || (keyRec && keyRec.webhook_url);
     if (wh && keyRec) enqueueWebhookDelivery(keyRec.key, wh, a, now);
     if (keyRec) bumpUsage(keyRec.key, 'fire_count');
-    if (a.alarm.recurrence === 'none') a.next_trigger = null;
-    else a.next_trigger = nextTriggerMs(a.alarm);
+    const al = a.alarm;
+    if (al.recurrence === 'none') a.next_trigger = null;
+    else {
+      a.next_trigger = nextTriggerMs(al); // 含日期/天数终止（返回 null 即停）
+      // 次数终止：每次触发累加，达到上限即停
+      if (al.end && al.end.type === 'count') {
+        al.fired_count = (al.fired_count || 0) + 1;
+        if (al.fired_count >= al.end.count) a.next_trigger = null;
+      }
+    }
     a.updated_at = new Date().toISOString();
     db.saveAlarm(a);
   }

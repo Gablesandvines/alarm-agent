@@ -114,4 +114,16 @@ module.exports = [
   // 不应误判为意图（回归：普通建闹钟句即使含"取消"语义词也不应误触发）
   { input: '明天早上8点叫我起床', expect: { success: true, intent: 'create' } },
   { input: '30分钟后提醒我开会',  expect: { success: true, intent: 'create' } },
+
+  // —— 重复终止条件（P1 产品力）：到某天为止 / 持续N天 / 共N次 ——
+  // date 型：到指定日期为止（含当天仍可触发），且结束日期不污染闹钟自身锚点
+  { input: '每天8点跑步，到2027年6月1日为止', expect: { success: true, time: '08:00', recurrence: 'daily', endType: 'date', endDate: '2027-06-01', labelIncludes: ['跑步'] } },
+  { input: '每周三下午3点健身，到2026年12月31日为止', expect: { success: true, time: '15:00', recurrence: 'weekly:3', endType: 'date', endDate: '2026-12-31', labelIncludes: ['健身'] } },
+  // days 型：持续 N 天
+  { input: '每天8点吃药，持续15天', expect: { success: true, time: '08:00', recurrence: 'daily', endType: 'days', endDays: 15, labelIncludes: ['吃药'] } },
+  // count 型：共 N 次（中文数字 + 阿拉伯数字）
+  { input: '每周一9点开会，共10次', expect: { success: true, time: '09:00', recurrence: 'weekly:1', endType: 'count', endCount: 10, labelIncludes: ['开会'] } },
+  { input: '工作日早上8点吃药，响5次就停', expect: { success: true, time: '08:00', recurrence: 'weekdays', endType: 'count', endCount: 5, labelIncludes: ['吃药'] } },
+  // 单次闹钟忽略结束条件（无重复则 end 不挂载）
+  { input: '明天8点开会，共5次', expect: { success: true, time: '08:00', recurrence: 'none', endNull: true, future: true } },
 ];

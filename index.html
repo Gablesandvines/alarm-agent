@@ -104,6 +104,7 @@
       <span>我有哪些闹钟</span>
       <span>取消8点的闹钟</span>
       <span>把起床改成7点</span>
+      <span>每天8点跑步，到2027年6月1日为止</span>
     </div>
     <div class="pending" id="pendingBanner" style="display:none">
       <span id="pendingText"></span>
@@ -183,10 +184,10 @@ function computeNextTrigger(a){
     if(a.timestamp){ const ts=a.timestamp*1000; return ts>=Date.now()?ts:null; }
     return null;
   }
-  // 重复闹钟：委托 scheduler.js（节假日感知 + 时区/DST 安全），并提前 lead 分钟触发
+  // 重复闹钟：委托 scheduler.js（节假日感知 + 时区/DST 安全 + 结束条件），并提前 lead 分钟触发
   if(typeof Scheduler!=='undefined'){
-    const base=Scheduler.computeNext(a.time, a.recurrence, (a.timestamp||Math.floor(Date.now()/1000))*1000, a.timezone||'Asia/Shanghai');
-    return base==null?null:base-lead;
+    const nt=Scheduler.nextTriggerMs(a);
+    return nt;
   }
   // 兜底：无 scheduler 时的极简本地逻辑（不含节假日/时区）
   const now=Date.now();
@@ -216,6 +217,21 @@ function recLabel(r){
   if(r.startsWith('every:')) return '每'+r.split(':')[1]+'天';
   return r;
 }
+function endLabel(e){
+  if(!e) return '';
+  if(e.type==='date') return '至'+e.date;
+  if(e.type==='days') return '持续'+e.days+'天';
+  if(e.type==='count') return '共'+e.count+'次';
+  return '';
+}
+function endLabelShort(a){
+  const e=a.end; if(!e) return '';
+  if(e.type==='date') return ' · 至'+e.date;
+  if(e.type==='days') return ' · 持续'+e.days+'天';
+  if(e.type==='count'){ const left=Math.max(0,(e.count||0)-(a.fired_count||0)); return ' · 剩'+left+'次'; }
+  return '';
+}
+function endEditVal(a){ const e=a.end; if(!e) return ''; if(e.type==='date') return e.date; if(e.type==='days') return e.days; if(e.type==='count') return e.count; return ''; }
 
 const $=id=>document.getElementById(id);
 // App Key：服务端在启用 ALARM_APP_KEY 时会注入到 <meta name="app-api-key">。
@@ -235,11 +251,13 @@ function renderPreview(){
     const a=r.alarm;
     const srcBadge=`<div class="b"><div class="k">来源</div><div class="v ${currentSource==='llm'?'ok':''}">${currentSource==='llm'?'🌐 LLM 兜底':'本地规则'}</div></div>`;
     const leadBadge = a.lead_minutes>0 ? `<div class="b"><div class="k">提前</div><div class="v">${a.lead_minutes} 分钟</div></div>` : '';
+    const endBadge = a.end ? `<div class="b"><div class="k">结束</div><div class="v">${endLabel(a.end)}</div></div>` : '';
     $('summary').innerHTML= srcBadge + `
       <div class="b"><div class="k">触发时间</div><div class="v ok">${a.date} ${a.time}</div></div>
       <div class="b"><div class="k">时间戳</div><div class="v">${a.timestamp}</div></div>
       <div class="b"><div class="k">重复</div><div class="v">${recLabel(a.recurrence)}</div></div>
       ${leadBadge}
+      ${endBadge}
       <div class="b"><div class="k">备注</div><div class="v">${a.label}</div></div>`;
     $('saveRow').style.display='flex';
   } else {
@@ -268,11 +286,12 @@ function renderList(){
     const div=document.createElement('div');
     div.className='item'+(a.enabled?'':' off');
     const leadTxt=(a.lead_minutes>0)?` · 提前${a.lead_minutes}分`:'';
+    const endTxt=endLabelShort(a);
     div.innerHTML=`
       <div class="t">${a.time}</div>
       <div class="meta">
         <div class="lab">${a.label}</div>
-        <div class="sub">${recLabel(a.recurrence)} · 下次：${a.enabled?fmtNext(nt):'已停用'}${leadTxt} <span class="pill rec">#${a.timestamp}</span></div>
+        <div class="sub">${recLabel(a.recurrence)} · 下次：${a.enabled?fmtNext(nt):'已停用'}${leadTxt}${endTxt} <span class="pill rec">#${a.timestamp}</span></div>
       </div>
       <div class="sw ${a.enabled?'on':''}" data-id="${a.id}"></div>
       <button class="edit" data-id="${a.id}">编辑</button>
@@ -302,6 +321,16 @@ function buildEditRow(a){
         <input type="number" id="edLead" value="${a.lead_minutes||0}" min="0" max="1440" style="flex:0 0 64px">
         <span style="font-size:12px;color:var(--sub)">分钟</span>
       </div>
+      <div class="row" style="margin:8px 0 0;gap:6px;align-items:center">
+        <span style="font-size:12px;color:var(--sub)">结束</span>
+        <select id="edEnd" style="flex:1;max-width:110px">
+          <option value="none" ${!a.end?'selected':''}>无</option>
+          <option value="date" ${a.end&&a.end.type==='date'?'selected':''}>到某天</option>
+          <option value="days" ${a.end&&a.end.type==='days'?'selected':''}>持续天</option>
+          <option value="count" ${a.end&&a.end.type==='count'?'selected':''}>共次数</option>
+        </select>
+        <input id="edEndVal" value="${endEditVal(a)}" placeholder="日期或数字" style="flex:1;max-width:120px">
+      </div>
     </div>
     <button class="edit" id="edSave">保存</button>
     <button class="del" id="edCancel">取消</button>`;
@@ -315,8 +344,15 @@ function commitEdit(id){
   const newRec=document.querySelector('#edRec').value;
   const newLabel=(document.querySelector('#edLabel').value||'').trim();
   const newLead=Math.max(0,parseInt(document.querySelector('#edLead').value,10)||0);
+  const endType=document.querySelector('#edEnd').value;
+  const endValRaw=(document.querySelector('#edEndVal').value||'').trim();
+  let newEnd=null;
+  if(endType==='date' && /^\d{4}-\d{1,2}-\d{1,2}$/.test(endValRaw)) newEnd={type:'date',date:endValRaw};
+  else if(endType==='days' && parseInt(endValRaw,10)>0) newEnd={type:'days',days:parseInt(endValRaw,10)};
+  else if(endType==='count' && parseInt(endValRaw,10)>0) newEnd={type:'count',count:parseInt(endValRaw,10)};
   const oldSnap={...a};
-  a.label=newLabel; a.recurrence=newRec; a.lead_minutes=newLead;
+  a.label=newLabel; a.recurrence=newRec; a.lead_minutes=newLead; a.end=newEnd;
+  if(newEnd && newEnd.type==='count') a.fired_count=0;
   if(newRec==='none'){
     const [hh,mm]=newTime.split(':').map(Number);
     const now=new Date();
@@ -443,7 +479,8 @@ function saveAlarm(){
     id:'a'+Date.now()+Math.floor(Math.random()*1000),
     raw:currentParsed.raw, timestamp:a.timestamp, datetime:a.datetime,
     date:a.date, time:a.time, recurrence:a.recurrence, timezone:a.timezone,
-    label:a.label, lead_minutes:a.lead_minutes||0, enabled:true, createdAt:Date.now()
+    label:a.label, lead_minutes:a.lead_minutes||0, end:a.end||null, fired_count:0,
+    enabled:true, createdAt:Date.now()
   };
   alarms.unshift(item); save(); renderList();
   toast('已保存闹钟 ✓'); $('saveHint').textContent='下次响铃：'+fmtNext(computeNextTrigger(item));
@@ -474,6 +511,10 @@ function fire(a){
   $('ringTime').textContent=a.time; $('ringLab').textContent=a.label||'时间到';
   $('ringbox').classList.add('show');
   if(a.recurrence==='none'){ a.enabled=false; save(); }
+  else if(a.end && a.end.type==='count'){
+    a.fired_count=(a.fired_count||0)+1;
+    if(a.fired_count>=a.end.count){ a.enabled=false; save(); }
+  }
   renderList();
 }
 $('ringStop').onclick=()=>{ $('ringbox').classList.remove('show'); };
@@ -524,7 +565,7 @@ async function enablePush(){
 async function syncAlarmToServer(action,item){
   if(!pushActive||!clientId) return;
   try{
-    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0})}); }
+    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0,end:item.end||null,fired_count:item.fired_count||0})}); }
     else if(action==='remove'){ await fetch('/api/alarm/remove',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id})}); }
   }catch(e){ /* 离线：本地仍兜底调度 */ }
 }

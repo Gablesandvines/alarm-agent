@@ -107,5 +107,52 @@ console.log('— 调度/时区回归 —');
   assert(Math.abs(ts - Date.UTC(2026, 5, 10, 0, 30, 0)) < 1000, 'none+timestamp 路径不二次扣除 lead', String(ts));
 }
 
+// 8) 重复终止条件（P1）：date / days 在调度层判终止；count 不在调度层（交由触发计数）
+{
+  const tz = 'Asia/Shanghai';
+  // 8a) date 未到期：next 落在结束日之前 → 仍触发
+  {
+    const now = Date.UTC(2026, 9, 9, 1, 0, 0); // 2026-10-09 09:00 上海
+    const t = nextTriggerMs({ time: '08:00', recurrence: 'daily', timezone: tz, end: { type: 'date', date: '2026-10-12' } }, now);
+    assert(typeof t === 'number' && t > now, 'date 未到期：daily 仍触发', String(t));
+    assert(wallDateAt(t, tz) === '2026-10-10', 'date 未到期：触发日=2026-10-10', wallDateAt(t, tz));
+  }
+  // 8b) date 到期当日：base==endDate 仍触发（"包含当天"语义，严格大于才终止）
+  {
+    const now = Date.UTC(2026, 9, 11, 1, 0, 0); // 2026-10-11 09:00 上海（周日）
+    const t = nextTriggerMs({ time: '08:00', recurrence: 'daily', timezone: tz, end: { type: 'date', date: '2026-10-12' } }, now);
+    assert(typeof t === 'number' && t > now, 'date 当日：仍可触发（含结束日）', String(t));
+    assert(wallDateAt(t, tz) === '2026-10-12', 'date 当日：触发日=2026-10-12', wallDateAt(t, tz));
+  }
+  // 8c) date 已过期：next 超过结束日 → 返回 null（终止）
+  {
+    const now = Date.UTC(2026, 9, 12, 1, 0, 0); // 2026-10-12 09:00 上海
+    const t = nextTriggerMs({ time: '08:00', recurrence: 'daily', timezone: tz, end: { type: 'date', date: '2026-10-12' } }, now);
+    assert(t === null, 'date 过期：返回 null（终止）', String(t));
+  }
+  // 8d) days 未到期：以 timestamp 为起点，next 落在窗口内 → 仍触发
+  {
+    const startTs = Math.floor(Date.UTC(2026, 9, 10, 0, 0, 0) / 1000); // 2026-10-10 08:00 上海（起点）
+    const now = Date.UTC(2026, 9, 14, 1, 0, 0); // 2026-10-14 09:00 上海
+    const t = nextTriggerMs({ time: '08:00', recurrence: 'daily', timezone: tz, timestamp: startTs, end: { type: 'days', days: 10 } }, now);
+    assert(typeof t === 'number' && t > now, 'days 未到期：仍触发', String(t));
+    assert(wallDateAt(t, tz) === '2026-10-15', 'days 未到期：触发日=2026-10-15', wallDateAt(t, tz));
+  }
+  // 8e) days 已超窗口：next 超过 起点+N 天 → 返回 null（终止）
+  {
+    const startTs = Math.floor(Date.UTC(2026, 9, 10, 0, 0, 0) / 1000); // 起点 2026-10-10
+    const now = Date.UTC(2026, 9, 14, 1, 0, 0); // 2026-10-14 09:00 上海
+    const t = nextTriggerMs({ time: '08:00', recurrence: 'daily', timezone: tz, timestamp: startTs, end: { type: 'days', days: 3 } }, now);
+    assert(t === null, 'days 超窗口：返回 null（终止）', String(t));
+  }
+  // 8f) count 不在调度层终止：end.type=count 时 endExceeded 恒 false → 仍给出触发（由 fires 计数处理）
+  {
+    const now = Date.UTC(2026, 9, 9, 1, 0, 0); // 2026-10-09 09:00 上海（周五）
+    const t = nextTriggerMs({ time: '09:00', recurrence: 'weekly:1', timezone: tz, end: { type: 'count', count: 10 } }, now);
+    assert(typeof t === 'number' && t > now, 'count 不在调度层终止：仍给出触发', String(t));
+    assert(wallDateAt(t, tz) === '2026-10-12', 'count 触发日=下一个周一 2026-10-12', wallDateAt(t, tz));
+  }
+}
+
 console.log('\n结果： ' + pass + ' 通过 / ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

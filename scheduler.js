@@ -101,7 +101,27 @@ function nextTriggerMs(alarm, nowOverride) {
   const anchor = (alarm.timestamp || Math.floor((nowOverride || Date.now()) / 1000)) * 1000;
   const base = computeNext(alarm.time, rec, anchor, tz, nowOverride);
   if (base == null) return null;
+  if (endExceeded(alarm, base, tz, nowOverride)) return null; // 日期/天数终止
   return base - lead; // 重复闹钟同样提前 lead 分钟触发
+}
+
+// 是否已超过结束条件（仅 date / days 在调度层判定；count 由触发计数在 fires 时处理）
+function endExceeded(alarm, base, tz, nowOverride) {
+  const e = alarm.end;
+  if (!e) return false;
+  if (e.type === 'date') {
+    const [Y, M, D] = e.date.split('-').map(Number);
+    const endNum = Y * 10000 + M * 100 + D;
+    const p = tzDateParts(base, tz);
+    const baseNum = p.y * 10000 + p.mo * 100 + p.d;
+    return baseNum > endNum; // 超过结束日（含当天）即终止
+  }
+  if (e.type === 'days') {
+    const startTs = (alarm.timestamp || Math.floor((nowOverride || Date.now()) / 1000)) * 1000;
+    const endTs = startTs + (e.days || 0) * 86400000;
+    return base > endTs;
+  }
+  return false;
 }
 
 // 计算下一次触发（时区感知，支持夏令时 + 月度）。以「时区内的日历日」为步进，避免本地与闹钟时区错位。
@@ -172,8 +192,8 @@ function wallClockAt(epoch, tz) {
 
 module.exports = {
   tzOffsetAt, wallToEpoch, tzDateParts, addDays, daysInMonth, weekdayOf,
-  nextTriggerMs, computeNext, wallClockAt, isWorkday, setHolidays, HOLIDAYS
+  nextTriggerMs, computeNext, wallClockAt, isWorkday, setHolidays, HOLIDAYS, endExceeded
 };
 if (typeof window !== 'undefined') {
-  window.Scheduler = { tzOffsetAt, wallToEpoch, tzDateParts, addDays, daysInMonth, weekdayOf, nextTriggerMs, computeNext, wallClockAt, isWorkday, setHolidays, HOLIDAYS };
+  window.Scheduler = { tzOffsetAt, wallToEpoch, tzDateParts, addDays, daysInMonth, weekdayOf, nextTriggerMs, computeNext, wallClockAt, isWorkday, setHolidays, HOLIDAYS, endExceeded };
 }

@@ -13,6 +13,7 @@
 - **时区与夏令时安全**：重复闹钟（每天 / 工作日 / 周末 / 每周 X / 每 N 天 / 双周 X / 每月 N 号）按闹钟时区计算下次触发，跨夏令时切换日墙钟时间不漂移。
 - **中国法定节假日感知**：`工作日` 闹钟自动跳过元旦 / 春节 / 清明 / 劳动 / 端午 / 中秋 / 国庆等法定假期，并包含调休补班周末（数据随国务院办公厅每年放假通知更新，见 `scheduler.js` 的 `HOLIDAYS`）。
 - **提前提醒（lead_minutes）**：单次与重复闹钟均支持「提前 N 分钟」触发——服务端重排已修正此前重复闹钟提前提醒失效的问题。
+- **重复终止条件**：重复闹钟支持三种结束方式——「到某天为止」（含当天仍可触发）、「持续 N 天」、「共 N 次」。仅对重复闹钟生效，单次闹钟自动忽略；结束日期不污染闹钟自身锚点。解析结果落到 `alarm.end`（`{type:'date',date}` / `{type:'days',days}` / `{type:'count',count}`），前端与开放 API 均已打通（显示/编辑/持久化/到点终止）。
 - **Webhook 投递**：触发时向你的回调地址投递 `alarm.fired` 事件，附带 **HMAC-SHA256 签名**，可验真伪。
 - **多租户 API Key**：Bearer 鉴权、按 key 限流（计数持久化，重启不丢）、租户数据隔离。
 - **可观测性**：结构化 JSON 日志 + `/v1/metrics` 指标（解析耗时、Webhook 投递成功率），便于接入日志 / 监控系统。
@@ -204,8 +205,8 @@ curl http://localhost:8080/v1/usage -H "Authorization: Bearer <你的KEY>"
 ## 🧪 测试
 
 ```bash
-node tests/run.js        # 解析引擎回归（78 例，含多轮追问/矛盾检测/每月重复/对话式意图 cancel·modify·query）
-node tests/scheduler.js  # 调度/时区回归（28 例，含美东 DST 春进/秋退墙钟稳定、daily/monthly 重排、节假日感知工作日、提前提醒）
+node tests/run.js        # 解析引擎回归（84 例，含多轮追问/矛盾检测/每月重复/对话式意图 cancel·modify·query/重复终止条件 date·days·count）
+node tests/scheduler.js  # 调度/时区回归（38 例，含美东 DST 春进/秋退墙钟稳定、daily/monthly 重排、节假日感知工作日、提前提醒、重复终止条件 date·days·count 终止判定）
 npm test                # 上述两套 + 开放 API 集成测试（69 例，含密钥隔离、配额、Webhook 投递与验签、崩溃恢复、原子抢占、指标边界、调度重排、提前提醒、投递退避、App Key 门控）
 ```
 

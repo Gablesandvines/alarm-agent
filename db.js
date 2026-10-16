@@ -122,7 +122,9 @@ CREATE TABLE IF NOT EXISTS legacy_alarms (
   label TEXT,
   lead_minutes INTEGER NOT NULL DEFAULT 0,
   fired INTEGER NOT NULL DEFAULT 0,
-  next_trigger INTEGER
+  next_trigger INTEGER,
+  end_json TEXT,
+  fired_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS rate_limits (
   key_hash TEXT NOT NULL,
@@ -274,16 +276,17 @@ function listLegacyAlarms() {
   return db.prepare('SELECT * FROM legacy_alarms').all().map(r => ({
     id: r.id, clientId: r.client_id, subscription: r.subscription_json ? JSON.parse(r.subscription_json) : null,
     timestamp: r.timestamp, time: r.time, recurrence: r.recurrence, label: r.label,
-    lead_minutes: r.lead_minutes || 0,
-    fired: !!r.fired, nextTrigger: r.next_trigger
+    lead_minutes: r.lead_minutes || 0, end: r.end_json ? JSON.parse(r.end_json) : null,
+    fired: !!r.fired, nextTrigger: r.next_trigger, fired_count: r.fired_count || 0
   }));
 }
 function saveLegacyAlarm(a) {
   db.prepare(`INSERT OR REPLACE INTO legacy_alarms
-    (id, client_id, subscription_json, timestamp, time, recurrence, label, lead_minutes, fired, next_trigger)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    (id, client_id, subscription_json, timestamp, time, recurrence, label, lead_minutes, fired, next_trigger, end_json, fired_count)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(a.id, a.clientId, a.subscription ? JSON.stringify(a.subscription) : null, a.timestamp || 0,
-      a.time, a.recurrence || 'none', a.label || '', a.lead_minutes || 0, a.fired ? 1 : 0, a.nextTrigger || 0);
+      a.time, a.recurrence || 'none', a.label || '', a.lead_minutes || 0, a.fired ? 1 : 0, a.nextTrigger || 0,
+      a.end ? JSON.stringify(a.end) : null, a.fired_count || 0);
 }
 function deleteLegacyAlarm(clientId, id) {
   return db.prepare('DELETE FROM legacy_alarms WHERE client_id = ? AND id = ?').run(clientId, id).changes > 0;
@@ -396,11 +399,17 @@ function migrateDeliveriesSchema() {
   }
 }
 
-// legacy_alarms 表补充 lead_minutes 列（重复闹钟「提前提醒」依赖；旧库 ALTER 补齐）
+// legacy_alarms 表补充 lead_minutes 列（重复闹钟「提前提醒」依赖）+ end_json/fired_count（结束条件依赖）；旧库 ALTER 补齐
 function migrateLegacyAlarmsSchema() {
   const cols = db.prepare('PRAGMA table_info(legacy_alarms)').all().map(c => c.name);
   if (!cols.includes('lead_minutes')) {
     db.exec('ALTER TABLE legacy_alarms ADD COLUMN lead_minutes INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!cols.includes('end_json')) {
+    db.exec('ALTER TABLE legacy_alarms ADD COLUMN end_json TEXT');
+  }
+  if (!cols.includes('fired_count')) {
+    db.exec('ALTER TABLE legacy_alarms ADD COLUMN fired_count INTEGER NOT NULL DEFAULT 0');
   }
 }
 
@@ -461,8 +470,8 @@ function migrateFromJson() {
       const s = JSON.parse(fs.readFileSync(sp, 'utf8'));
       const insSub = db.prepare('INSERT OR IGNORE INTO subs (id, subscription_json, created_at) VALUES (?,?,?)');
       for (const id in (s.subs || {})) insSub.run(id, JSON.stringify(s.subs[id].subscription), new Date(s.subs[id].createdAt || Date.now()).toISOString());
-      const insA = db.prepare('INSERT OR IGNORE INTO legacy_alarms (id, client_id, subscription_json, timestamp, time, recurrence, label, fired, next_trigger) VALUES (?,?,?,?,?,?,?,?,?)');
-      for (const a of (s.alarms || [])) insA.run(a.id, a.clientId, a.subscription ? JSON.stringify(a.subscription) : null, a.timestamp || 0, a.time, a.recurrence || 'none', a.label || '', a.fired ? 1 : 0, a.nextTrigger || 0);
+      const insA = db.prepare('INSERT OR IGNORE INTO legacy_alarms (id, client_id, subscription_json, timestamp, time, recurrence, label, fired, next_trigger, end_json, fired_count) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+      for (const a of (s.alarms || [])) insA.run(a.id, a.clientId, a.subscription ? JSON.stringify(a.subscription) : null, a.timestamp || 0, a.time, a.recurrence || 'none', a.label || '', a.fired ? 1 : 0, a.nextTrigger || 0, null, 0);
       migrated.store = (Object.keys(s.subs || {}).length) + (s.alarms || []).length;
     } catch (e) { console.warn('[db] store.json 迁移失败', e.message); }
   }

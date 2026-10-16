@@ -191,6 +191,49 @@
     return { intent: 'create' };
   }
 
+  // 重复闹钟「结束条件」解析：到某天为止 / 持续N天 / 共N次（仅对重复闹钟生效；单次闹钟忽略）
+  function parseEndDate(s, nowDate) {
+    s = (s || '').trim(); if (!s) return null;
+    const dim = (y, mo) => new Date(y, mo, 0).getDate();
+    const ad = parseAbsDate(s);
+    if (ad) {
+      let year = ad.year, month = ad.month, day = ad.day;
+      const today0 = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate());
+      if (year === undefined) { year = nowDate.getFullYear(); if (new Date(year, month - 1, day) < today0) year++; }
+      if (month === undefined) { month = nowDate.getMonth() + 1; if (new Date(year, month - 1, day) < today0) { month++; if (month > 12) { month = 1; year++; } } }
+      return `${year}-${pad2(month)}-${pad2(day)}`;
+    }
+    let m;
+    if ((m = s.match(/(今|本|这|明|次)\s*年底/))) { let y = nowDate.getFullYear(); if (m[1] === '明' || m[1] === '次') y += 1; return `${y}-12-31`; }
+    if (/月底/.test(s)) { const y = nowDate.getFullYear(), mo = nowDate.getMonth() + 1; return `${y}-${pad2(mo)}-${pad2(dim(y, mo))}`; }
+    if ((m = s.match(/(下|本|这)?\s*(周|星期|礼拜)\s*([一二三四五六日天七\d])/))) {
+      const w = weekNum(m[3]); const base = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate());
+      const curMon = (base.getDay() + 6) % 7, tgtMon = (w + 6) % 7;
+      let add = tgtMon - curMon;
+      if (m[1] !== '下') { const tw = new Date(base); tw.setDate(tw.getDate() + add); if (tw < base) add += 7; } else { add = tgtMon - curMon + 7; }
+      const d = new Date(base); d.setDate(d.getDate() + add);
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    }
+    for (const k in DAYOFF) { if (s.includes(k)) { const d = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate()); d.setDate(d.getDate() + DAYOFF[k]); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; } }
+    return null;
+  }
+  function parseEnd(text, nowDate) {
+    let m, raw = null;
+    if ((m = text.match(/(?:持续|连续|坚持|连|共)\s*(半|一|两|二|三|四|五|六|七|八|九|十|\d+)\s*天/))) { const n = m[1] === '半' ? 15 : cnNum(m[1]); if (n) return { end: { type: 'days', days: n }, raw: m[0] }; }
+    if ((m = text.match(/共\s*(半|一|两|二|三|四|五|六|七|八|九|十|\d+)\s*次/))) { const n = m[1] === '半' ? 5 : cnNum(m[1]); if (n) return { end: { type: 'count', count: n }, raw: m[0] }; }
+    if ((m = text.match(/响\s*(半|一|两|二|三|四|五|六|七|八|九|十|\d+)\s*次/))) { const n = m[1] === '半' ? 5 : cnNum(m[1]); if (n) return { end: { type: 'count', count: n }, raw: m[0] }; }
+    if ((m = text.match(/(\d+)\s*次\s*(?:后|之后|停止|就停|结束|不再)/))) { const n = cnNum(m[1]); if (n) return { end: { type: 'count', count: n }, raw: m[0] }; }
+    if ((m = text.match(/((?:到|直到|直至)\s*[^，。,.\s]*?\s*(?:为止|才停|结束|停止|就不?再?|后才?|就不再|了)?)\s*$/))) {
+      const full = m[1]; const clause = full.replace(/^(?:到|直到|直至)\s*/, '').replace(/(?:为止|才停|结束|停止|就不?再?|后才?|就不再|了)?$/, '');
+      const d = parseEndDate(clause, nowDate); if (d) return { end: { type: 'date', date: d }, raw: full };
+    }
+    if ((m = text.match(/((?:到|直到|直至)\s*[^，。,.\s]{1,24}?)(?:为止|才停|结束|停止|就|后)/))) {
+      const full = m[1]; const clause = full.replace(/^(?:到|直到|直至)\s*/, '');
+      const d = parseEndDate(clause, nowDate); if (d) return { end: { type: 'date', date: d }, raw: full };
+    }
+    return null;
+  }
+
   function parseAlarm(text, opts) {
     text = (text || '').trim();
     // ---- 0. 对话式意图识别（取消 / 修改 / 查询 / 新建） ----
@@ -326,6 +369,17 @@
       if (ctxHasDay && relMatch && hour === null) { contradiction = true; relMatch = null; }
     }
 
+    // ---- 6.7 结束条件（仅重复闹钟） ----
+    let endObj = null, endRaw = null;
+    if (recurrence !== 'none') {
+      const e = parseEnd(text, now);
+      if (e) {
+        endObj = e.end; endRaw = e.raw;
+        // 结束日期不污染闹钟自身锚点（避免"到10月1日为止"被误当作闹钟日期）
+        if (endObj.type === 'date') { absDate = null; weekTarget = null; weekNext = false; dayOffset = 0; }
+      }
+    }
+
     // ---- 7. 组合时间 ----
     const tz = 'Asia/Shanghai';
     let target = null;
@@ -406,9 +460,10 @@
     }
 
     // ---- 8. 标签提取 ----
+    if (endRaw) consumed.push(endRaw);
     let label = text;
     consumed.forEach(c => { label = label.split(c).join(''); });
-    const stop = /设置|设个|设为|设|一个?|闹钟|提醒我|提醒|叫我|叫醒|叫|帮我|请|需要|想|要|在|的|时间|时候|左右|大概|大约|之后|以后|后|来|去|做|干|一下|点个?|今|明|个/g;
+    const stop = /设置|设个|设为|设|一个?|闹钟|提醒我|提醒|叫我|叫醒|叫|帮我|请|需要|想|要|在|的|时间|时候|左右|大概|大约|之后|以后|后|来|去|做|干|一下|点个?|今|明|个|到|直到|直至|为止|结束|停止|持续|连续|坚持/g;
     label = label.replace(stop, '').replace(/\s+/g, '').trim();
     // 去除模糊时间词与残留指令词（待会/有空了/我/了…），避免多轮追问累加时污染 label
     label = label.replace(/(待会|等下|等一下|一会儿|一会|有空|回头|到时候|稍后|稍等|过会儿|随后|之后再说|改天|空了|方便时|我|了)/g, '').trim();
@@ -462,6 +517,7 @@
         recurrence: recurrence,
         timezone: tz,
         lead_minutes: leadMin || 0,
+        end: endObj,
         label: label || ctxLabel || '(无备注)',
         enabled: true
       },
