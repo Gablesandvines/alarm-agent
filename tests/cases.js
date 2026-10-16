@@ -99,4 +99,19 @@ module.exports = [
   // 矛盾检测：已有日期锚点却只给"相对时长" → 不静默丢弃日期，仍追问具体时刻，partial 保留
   { input: '30分钟', context: { weekTarget: 1, weekNext: true }, expect: { success: false, needsClarification: true, clarifyType: 'time_of_day', partialWeekTarget: 1 } },
   { input: '30分钟后', context: { weekTarget: 1, weekNext: true }, expect: { success: false, needsClarification: true, clarifyType: 'time_of_day', partialWeekTarget: 1 } },
+
+  // —— 对话式意图：取消 / 修改 / 查询（P0 产品力）——
+  { input: '取消8点的闹钟',     expect: { success: true, intent: 'cancel', matchTime: '08:00' } },
+  { input: '删除所有闹钟',       expect: { success: true, intent: 'cancel', matchAll: true } },
+  { input: '取消明天的闹钟',     expect: { success: true, intent: 'cancel', hasDate: true } },
+  { input: '取消每天早上的闹钟', expect: { success: true, intent: 'cancel', matchRecurrence: 'daily' } },
+  { input: '把起床的闹钟改成7点', expect: { success: true, intent: 'modify', matchLabel: '起床', updateTime: '07:00' } },
+  { input: '改成每天',           expect: { success: true, intent: 'modify', updateRecurrence: 'daily' } },
+  { input: '把8点改成9点',       expect: { success: true, intent: 'modify', matchTime: '08:00', updateTime: '09:00' } },
+  { input: '改成',               expect: { success: false, intent: 'modify', clarifyType: 'modify_target' } },
+  { input: '我有哪些闹钟',       expect: { success: true, intent: 'query' } },
+  { input: '显示我的闹钟',       expect: { success: true, intent: 'query' } },
+  // 不应误判为意图（回归：普通建闹钟句即使含"取消"语义词也不应误触发）
+  { input: '明天早上8点叫我起床', expect: { success: true, intent: 'create' } },
+  { input: '30分钟后提醒我开会',  expect: { success: true, intent: 'create' } },
 ];

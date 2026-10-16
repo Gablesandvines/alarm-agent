@@ -19,6 +19,7 @@
 - **投递可靠性**：Webhook 投递队列 **原子抢占**（同一条不双发、可多实例共享）+ 5s 超时防挂起 + 卡死自动恢复 + 终态 7 天清理。
 - **开发者门户**：`/portal` 单页控制台，自助管理密钥、配置 Webhook、查看用量看板。
 - **前端单一数据源**：参考 App（`index.html`）直接引入 `nlu.js` 单文件引擎，不再内联复制解析逻辑——引擎升级（含多轮追问）前端自动同步，杜绝漂移。
+- **对话式意图（取消 / 修改 / 查询）**：不只是"新建"。`nlu.js` 识别 `取消 / 删除`、`改成 / 改为`、`我有哪些 / 显示` 等口语，输出结构化 `intent`（`cancel` / `modify` / `query`）+ `match` / `update` 指令；参考 App 据此对本地闹钟列表执行取消、修改（时间 / 重复 / 备注 / 提前分钟）、查询并展示，真正像一个"对话式闹钟管家"。
 - **三档套餐**：`free` / `pro` / `enterprise`，含月度解析配额。
 - **自托管、零外部依赖**：数据存本地 SQLite（Node 22 内置 `node:sqlite`），不依赖外部数据库或云服务。
 
@@ -203,7 +204,7 @@ curl http://localhost:8080/v1/usage -H "Authorization: Bearer <你的KEY>"
 ## 🧪 测试
 
 ```bash
-node tests/run.js        # 解析引擎回归（66 例，含多轮追问/矛盾检测/每月重复）
+node tests/run.js        # 解析引擎回归（78 例，含多轮追问/矛盾检测/每月重复/对话式意图 cancel·modify·query）
 node tests/scheduler.js  # 调度/时区回归（28 例，含美东 DST 春进/秋退墙钟稳定、daily/monthly 重排、节假日感知工作日、提前提醒）
 npm test                # 上述两套 + 开放 API 集成测试（69 例，含密钥隔离、配额、Webhook 投递与验签、崩溃恢复、原子抢占、指标边界、调度重排、提前提醒、投递退避、App Key 门控）
 ```

@@ -101,6 +101,9 @@
       <span>两小时后看锅</span>
       <span>每周三下午3点健身</span>
       <span>待会提醒我喝水</span>
+      <span>我有哪些闹钟</span>
+      <span>取消8点的闹钟</span>
+      <span>把起床改成7点</span>
     </div>
     <div class="pending" id="pendingBanner" style="display:none">
       <span id="pendingText"></span>
@@ -327,6 +330,77 @@ function commitEdit(id){
   syncAlarmToServer('add', a);
 }
 
+/* ===================== 对话式意图执行（取消 / 修改 / 查询） ===================== */
+// 说明：nlu 只产出 match/update 结构化指令，真正的匹配在本函数（持有本地闹钟列表）完成。
+function findIntentMatches(match){
+  if(match.all) return alarms.slice();
+  let pool=alarms;
+  if(match.date) pool=pool.filter(a=>(a.date||'')===match.date);
+  if(match.time) pool=pool.filter(a=>a.time===match.time);
+  if(match.recurrence) pool=pool.filter(a=>a.recurrence===match.recurrence);
+  if(match.label) pool=pool.filter(a=>(a.label||'').includes(match.label));
+  if(!match.date && !match.time && !match.recurrence && !match.label && !match.all) return pool.length?[pool[0]]:[];
+  return pool;
+}
+function applyIntentMatch(match, action, update){
+  const matched=findIntentMatches(match);
+  const names=matched.map(a=>(a.label||a.time));
+  if(action==='cancel'){
+    const removed=matched.slice();
+    alarms=alarms.filter(a=>!matched.includes(a));
+    removed.forEach(a=>syncAlarmToServer('remove',a));
+    save(); renderList();
+  } else if(action==='modify'){
+    matched.forEach(a=>{
+      const old={...a};
+      if(update.time) a.time=update.time;
+      if(update.recurrence) a.recurrence=update.recurrence;
+      if(update.label) a.label=update.label;
+      if(update.lead_minutes!=null) a.lead_minutes=update.lead_minutes;
+      if(a.recurrence==='none' && update.time){
+        const [hh,mm]=update.time.split(':').map(Number); const now=new Date();
+        let d=new Date(now.getFullYear(),now.getMonth(),now.getDate(),hh,mm,0,0);
+        if(d.getTime()<=now.getTime()) d.setDate(d.getDate()+1);
+        a.date=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+        a.timestamp=Math.floor(d.getTime()/1000);
+      }
+      syncAlarmToServer('remove',old); syncAlarmToServer('add',a);
+    });
+    save(); renderList();
+  }
+  return { matched, names };
+}
+function modifyDesc(u){
+  const parts=[];
+  if(u.time) parts.push('时间→'+u.time);
+  if(u.recurrence) parts.push('重复→'+recLabel(u.recurrence));
+  if(u.label) parts.push('备注→'+u.label);
+  if(u.lead_minutes!=null) parts.push('提前→'+u.lead_minutes+'分');
+  return parts.join('，')||'无变化';
+}
+function renderIntent(r){
+  $('json').textContent=JSON.stringify(r,null,2);
+  $('clarify').style.display='none'; $('clarify').innerHTML='';
+  $('saveRow').style.display='none'; $('summary').innerHTML=''; $('amb').innerHTML='';
+  if(r.intent==='query'){
+    const n=alarms.length;
+    $('summary').innerHTML=`<div class="b"><div class="k">闹钟总数</div><div class="v ok">${n}</div></div>`;
+    if(!n){ $('amb').innerHTML='<div class="amb">你还没有任何闹钟。</div>'; }
+    else { let html='<div class="amb" style="font-weight:600">你的闹钟：</div>'; alarms.forEach((a,i)=>{ html+=`<div class="amb">${i+1}. ${a.time} · ${recLabel(a.recurrence)} · ${a.label}${a.enabled?'':'（已停用）'}</div>`; }); $('amb').innerHTML=html; }
+    toast('已列出闹钟');
+  } else if(r.intent==='cancel'){
+    const res=applyIntentMatch(r.match,'cancel');
+    $('summary').innerHTML=`<div class="b"><div class="k">操作</div><div class="v" style="color:var(--bad)">取消闹钟</div></div><div class="b"><div class="k">影响</div><div class="v">${res.matched.length} 个</div></div>`;
+    $('amb').innerHTML = res.matched.length ? `<div class="amb">已取消：${res.names.join('、')}</div>` : '<div class="amb">没有找到匹配的闹钟。</div>';
+    toast('已取消 '+res.matched.length+' 个闹钟');
+  } else if(r.intent==='modify'){
+    const res=applyIntentMatch(r.match,'modify',r.update);
+    $('summary').innerHTML=`<div class="b"><div class="k">操作</div><div class="v" style="color:var(--brand)">修改闹钟</div></div><div class="b"><div class="k">影响</div><div class="v">${res.matched.length} 个</div></div>`;
+    $('amb').innerHTML = res.matched.length ? `<div class="amb">已修改：${res.names.join('、')} → ${modifyDesc(r.update)}</div>` : '<div class="amb">没有找到匹配的闹钟。</div>';
+    toast('已修改 '+res.matched.length+' 个闹钟');
+  }
+}
+
 async function doParse(){
   try{
     const text=$('input').value.trim();
@@ -334,7 +408,8 @@ async function doParse(){
     // 多轮澄清：上一轮已理解部分锚点(下周一)则只补缺失字段（结构化合并，避免盲目拼接丢上下文）
     const opts = pendingContext ? { context: pendingContext } : undefined;
     let r=parseAlarm(text, opts); currentSource='rule';
-    if(!r.success){ // 本地规则失败/需澄清 → 尝试服务端兜底（可能接 LLM）
+    // 仅对「新建」类缺时间的句子尝试服务端 LLM 兜底；意图类（如修改目标不明）不误调
+    if(!r.success && (!r.intent || r.intent==='create')){
       try{
         const body={text};
         if(pendingContext) body.context=pendingContext;
@@ -344,7 +419,9 @@ async function doParse(){
     }
     if(r.success){
       pendingRaw=null; pendingOrigin=null; pendingContext=null; setPendingUI(false);   // 补全成功 → 结束追问
-      currentParsed=r; renderPreview();
+      currentParsed=r;
+      if(r.intent && r.intent!=='create'){ renderIntent(r); return; }   // 对话式意图：取消/修改/查询
+      renderPreview();
     } else {
       pendingRaw = pendingRaw ? (pendingRaw + ' ' + text) : text;   // 仅用于展示原始意图
       pendingOrigin = pendingOrigin || text;

@@ -108,8 +108,112 @@
     return p;
   }
 
+  /* ---------------- 对话式意图：取消 / 修改 / 查询 ----------------
+   * 这些助手让 parseAlarm 在不依赖「闹钟列表」的前提下，仅产出结构化指令
+   * （match / update）。真正的匹配与执行由持有列表的前端/服务端完成。 */
+  const pad2 = n => String(n).padStart(2, '0');
+  const DAYOFF = { '今天': 0, '今日': 0, '明天': 1, '明早': 1, '明晨': 1, '明晚': 1, '后天': 2, '大后天': 3, '昨天': -1, '前天': -2 };
+
+  // 从文本中抽取一个时刻（与 create 路径的时刻正则同源，但只取首尾、不构造 target）
+  function matchTime(t) {
+    let m;
+    if ((m = t.match(/(\d{1,2})[:：](\d{1,2})/))) return pad2(+m[1]) + ':' + pad2(+m[2]);
+    if ((m = t.match(/(\d{1,2})\s*点\s*(半|一刻|三刻|(\d{1,2})\s*分?)?/))) {
+      let h = +m[1], mi = 0;
+      if (m[2] === '半') mi = 30; else if (m[2] === '一刻') mi = 15; else if (m[2] === '三刻') mi = 45; else if (m[3] !== undefined) mi = +m[3];
+      if (h === 24) h = 0;
+      return pad2(h) + ':' + pad2(mi);
+    }
+    if ((m = t.match(/(十|[零一二两三四五六七八九])\s*点\s*(半|一刻|三刻|([零一二两三四五六七八九])\s*分?)?/))) {
+      let h = cnNum(m[1]), mi = 0;
+      if (m[2] === '半') mi = 30; else if (m[2] === '一刻') mi = 15; else if (m[2] === '三刻') mi = 45; else if (m[3] !== undefined) mi = cnNum(m[3]);
+      if (h === 24) h = 0;
+      return pad2(h) + ':' + pad2(mi);
+    }
+    return null;
+  }
+  function matchRecurrence(t) {
+    let m;
+    if ((m = t.match(/(每天|每日|每一天)/))) return 'daily';
+    if ((m = t.match(/(工作日|周一到周五|星期一到星期五)/))) return 'weekdays';
+    if ((m = t.match(/(周末|周六周日|星期六星期天)/))) return 'weekend';
+    if ((m = t.match(/(每周|每星期|每个礼拜)([一二三四五六日天七\d])/))) return 'weekly:' + weekNum(m[2]);
+    return null;
+  }
+  // 取消/修改：从「被操作对象描述」中抽取匹配条件
+  function extractMatch(t) {
+    const match = {};
+    if (/所有|全部|都|每一个|所有闹钟|全部闹钟/.test(t)) match.all = true;
+    const tm = matchTime(t); if (tm) match.time = tm;
+    const rec = matchRecurrence(t); if (rec) match.recurrence = rec;
+    for (const k in DAYOFF) { if (t.includes(k)) { const d = new Date(); d.setDate(d.getDate() + DAYOFF[k]); match.date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; break; } }
+    let rest = t.replace(/(取消|删掉|删除|去掉|移除|撤销|关掉|改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
+    // 去掉已被 time/recurrence/date 消费掉的文本，避免残留污染 label
+    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(/(\d{1,2})\s*点\s*(半|一刻|三刻|\d{1,2}\s*分?)?/g, '').replace(/(十|[零一二两三四五六七八九])\s*点\s*(半|一刻|三刻|([零一二两三四五六七八九])\s*分?)?/g, '');
+    rest = rest.replace(/(每天|每日|每一天|工作日|周末|每周|每星期|每个礼拜|周[一二三四五六日天七]|星期[一二三四五六日天七]|礼拜[一二三四五六日天七]|周一到周五|星期一到星期五)/g, '');
+    for (const k in DAYOFF) rest = rest.split(k).join('');
+    rest = rest.replace(/\s+/g, '').trim();
+    if (rest) match.label = rest;
+    return match;
+  }
+  // 修改：从「新值描述」中抽取待更新字段
+  function extractUpdate(spec) {
+    const u = {};
+    const tm = matchTime(spec); if (tm) u.time = tm;
+    const rec = matchRecurrence(spec); if (rec) u.recurrence = rec;
+    let m;
+    if ((m = spec.match(/提前\s*(半|一|两|二|三|四|五|六|七|八|九|十|\d+)\s*(分钟|分|个?小时|小时|钟头)/))) {
+      const isHalf = m[1] === '半'; const n = isHalf ? 30 : cnNum(m[1]);
+      u.lead_minutes = isHalf ? 30 : ((m[2].includes('小时') || m[2].includes('钟头')) ? n * 60 : n);
+    }
+    let rest = spec.replace(/(改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|提前|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
+    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(/(\d{1,2})\s*点\s*(半|一刻|三刻|\d{1,2}\s*分?)?/g, '').replace(/(十|[零一二两三四五六七八九])\s*点\s*(半|一刻|三刻|([零一二两三四五六七八九])\s*分?)?/g, '');
+    rest = rest.replace(/(每天|每日|每一天|工作日|周末|每周|每星期|每个礼拜|周[一二三四五六日天七]|星期[一二三四五六日天七]|礼拜[一二三四五六日天七]|周一到周五|星期一到星期五)/g, '');
+    for (const k in DAYOFF) rest = rest.split(k).join('');
+    rest = rest.replace(/\s+/g, '').trim();
+    if (rest) u.label = rest;
+    return u;
+  }
+  function detectIntent(text) {
+    let m;
+    // 修改：把X改成Y / 改为 / 调整为 / 改到 / 换为 / 换成 / 设成 / 调成 / 更新为（末尾目标可空 → 触发"要改成什么"追问）
+    if ((m = text.match(/(?:把|将)?\s*(.{0,16}?)\s*(?:改成|改为|调整为|改到|换为|换成|设成|调成|更新为)\s*(.*)/))) {
+      return { intent: 'modify', oldSpec: (m[1] || '').trim(), newSpec: (m[2] || '').trim() };
+    }
+    // 取消 / 删除类：需含 闹钟/提醒 域词，或含 时间/重复/全部 等闹钟信号，避免劫持普通含"取消"的建闹钟句
+    const CANCEL_RE = /(取消|删掉|删除|去掉|移除|撤销|关掉|别再?提醒|不要了)\s*(了|这个|那个|我的|那个)?/;
+    const hasDomain = /(闹钟|提醒)/.test(text);
+    const hasSignal = hasDomain || !!matchTime(text) || !!matchRecurrence(text) || /所有|全部|都/.test(text);
+    if (CANCEL_RE.test(text) && hasSignal) return { intent: 'cancel' };
+    // 查询类：必须含 闹钟/提醒 域词
+    if (hasDomain && /(有哪些|有什么|列出|查看|显示|看下?|查一下|告诉我|都有|几个|多少|列表|清单|在吗|呢)/.test(text)) return { intent: 'query' };
+    if (/^(我的)?\s*(闹钟|提醒)\s*$/.test(text) || /(闹钟|提醒)\s*(列表|清单)/.test(text)) return { intent: 'query' };
+    return { intent: 'create' };
+  }
+
   function parseAlarm(text, opts) {
     text = (text || '').trim();
+    // ---- 0. 对话式意图识别（取消 / 修改 / 查询 / 新建） ----
+    const intentRes = detectIntent(text);
+    if (intentRes.intent === 'cancel') {
+      return { success: true, intent: 'cancel', raw: text, match: extractMatch(text), confidence: 0.9, needs_clarification: false, ambiguities: [] };
+    }
+    if (intentRes.intent === 'query') {
+      return { success: true, intent: 'query', raw: text, confidence: 0.9, needs_clarification: false, ambiguities: [] };
+    }
+    if (intentRes.intent === 'modify') {
+      const match = extractMatch(intentRes.oldSpec || '');
+      const update = extractUpdate(intentRes.newSpec || '');
+      if (!Object.keys(update).length) {
+        return {
+          success: false, intent: 'modify', raw: text, needs_clarification: true,
+          ambiguities: ['要改成什么？例如：改成9点 / 改成每天'],
+          clarification: { type: 'modify_target', question: '要改成什么？例如：改成9点、改成每天、改成7点半', suggestions: ['改成9点', '改成每天', '改成7点半'] },
+          match
+        };
+      }
+      return { success: true, intent: 'modify', raw: text, match, update, confidence: 0.9, needs_clarification: false, ambiguities: [] };
+    }
     const consumed = [];
     let confidence = 0.5;
     let needsClarification = false;
@@ -334,7 +438,7 @@
       }
       ambiguities.push(clarification.question);
       return {
-        success: false, raw: text, alarm: null,
+        success: false, raw: text, alarm: null, intent: 'create',
         confidence: Number(confidence.toFixed(2)),
         needs_clarification: true, ambiguities, clarification,
         partial: buildPartial({ recurrence, weekTarget, weekNext, dayOffset, absDate, leadMin, label })
@@ -349,7 +453,7 @@
     const iso = `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(target.getMinutes())}:00${sign}${oh}:${om}`;
 
     return {
-      success: true, raw: text,
+      success: true, raw: text, intent: 'create',
       alarm: {
         timestamp: Math.floor(target.getTime() / 1000), // Unix 秒级时间戳（UTC）
         datetime: iso,

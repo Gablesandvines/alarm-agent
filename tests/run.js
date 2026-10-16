@@ -18,6 +18,36 @@ function check(c) {
   if (e.success !== undefined && r.success !== e.success)
     errs.push(`success 期望 ${e.success} 实得 ${r.success}`);
 
+  // 对话式意图：intent / match / update 断言
+  if (e.intent !== undefined && r.intent !== e.intent)
+    errs.push(`intent 期望 ${e.intent} 实得 ${r.intent}`);
+  if (e.matchTime !== undefined) {
+    if (!r.match || r.match.time !== e.matchTime)
+      errs.push(`match.time 期望 "${e.matchTime}" 实得 ${r.match ? r.match.time : 'null'}`);
+  }
+  if (e.matchAll !== undefined) {
+    if (!r.match || !r.match.all) errs.push('match.all 应为 true');
+  }
+  if (e.hasDate !== undefined) {
+    if (!r.match || !r.match.date) errs.push('match.date 应存在');
+  }
+  if (e.matchRecurrence !== undefined) {
+    if (!r.match || r.match.recurrence !== e.matchRecurrence)
+      errs.push(`match.recurrence 期望 "${e.matchRecurrence}" 实得 ${r.match ? r.match.recurrence : 'null'}`);
+  }
+  if (e.matchLabel !== undefined) {
+    if (!r.match || !(r.match.label || '').includes(e.matchLabel))
+      errs.push(`match.label 应包含 "${e.matchLabel}"（实得 ${r.match ? r.match.label : 'null'}）`);
+  }
+  if (e.updateTime !== undefined) {
+    if (!r.update || r.update.time !== e.updateTime)
+      errs.push(`update.time 期望 "${e.updateTime}" 实得 ${r.update ? r.update.time : 'null'}`);
+  }
+  if (e.updateRecurrence !== undefined) {
+    if (!r.update || r.update.recurrence !== e.updateRecurrence)
+      errs.push(`update.recurrence 期望 "${e.updateRecurrence}" 实得 ${r.update ? r.update.recurrence : 'null'}`);
+  }
+
   if (e.needsClarification !== undefined && r.needs_clarification !== e.needsClarification)
     errs.push(`needs_clarification 期望 ${e.needsClarification} 实得 ${r.needs_clarification}`);
 
