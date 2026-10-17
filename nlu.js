@@ -11,10 +11,23 @@
   // 所有墙钟↔UTC、偏移、日历日拆分均调用 scheduler，严禁本文件新造时区换算函数。
   var _sched;
   function sched() {
-    if (_sched !== undefined) return _sched;
-    _sched = (typeof window !== 'undefined' && window.Scheduler)
-      ? window.Scheduler
-      : (typeof require === 'function' ? require('./scheduler.js') : null);
+    if (_sched) return _sched;
+    var s = null;
+    if (typeof window !== 'undefined' && window.Scheduler) {
+      s = window.Scheduler;
+    } else if (typeof require === 'function') {
+      try { s = require('./scheduler.js'); } catch (e) { s = null; }
+    }
+    // 兜底：scheduler.js 顶层函数声明在浏览器会提升为全局；若 window.Scheduler 缺失则就地组装
+    if ((!s || typeof s.tzDateParts !== 'function') && typeof global !== 'undefined' && typeof global.tzDateParts === 'function') {
+      s = {
+        tzOffsetAt: global.tzOffsetAt, wallToEpoch: global.wallToEpoch, tzDateParts: global.tzDateParts,
+        addDays: global.addDays, daysInMonth: global.daysInMonth, weekdayOf: global.weekdayOf,
+        nextTriggerMs: global.nextTriggerMs, computeNext: global.computeNext, wallClockAt: global.wallClockAt,
+        isWorkday: global.isWorkday, setHolidays: global.setHolidays, HOLIDAYS: global.HOLIDAYS, endExceeded: global.endExceeded
+      };
+    }
+    _sched = s || null;
     return _sched;
   }
 

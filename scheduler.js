@@ -190,10 +190,13 @@ function wallClockAt(epoch, tz) {
   return hour + ':' + p.minute;
 }
 
-module.exports = {
+var __schedulerExports = {
   tzOffsetAt, wallToEpoch, tzDateParts, addDays, daysInMonth, weekdayOf,
   nextTriggerMs, computeNext, wallClockAt, isWorkday, setHolidays, HOLIDAYS, endExceeded
 };
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = __schedulerExports;   // Node
+}
 if (typeof window !== 'undefined') {
-  window.Scheduler = { tzOffsetAt, wallToEpoch, tzDateParts, addDays, daysInMonth, weekdayOf, nextTriggerMs, computeNext, wallClockAt, isWorkday, setHolidays, HOLIDAYS, endExceeded };
+  window.Scheduler = __schedulerExports; // 浏览器（module 未定义，上面的分支安全跳过，不再抛错中断）
 }
