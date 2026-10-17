@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS keys (
   plan TEXT NOT NULL DEFAULT 'free',
   webhook_url TEXT,
   webhook_verified INTEGER NOT NULL DEFAULT 0,
+  default_timezone TEXT DEFAULT 'Asia/Shanghai',
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS deliveries (
@@ -124,7 +125,8 @@ CREATE TABLE IF NOT EXISTS legacy_alarms (
   fired INTEGER NOT NULL DEFAULT 0,
   next_trigger INTEGER,
   end_json TEXT,
-  fired_count INTEGER NOT NULL DEFAULT 0
+  fired_count INTEGER NOT NULL DEFAULT 0,
+  timezone TEXT DEFAULT 'Asia/Shanghai'
 );
 CREATE TABLE IF NOT EXISTS rate_limits (
   key_hash TEXT NOT NULL,
@@ -144,6 +146,8 @@ migrateKeysSchema();
 migrateDeliveriesSchema();
 // legacy_alarms 表补充 lead_minutes（重复闹钟提前提醒依赖），旧库自动 ALTER
 migrateLegacyAlarmsSchema();
+// keys 表补充 default_timezone（租户级默认时区，P3），旧库自动 ALTER
+migrateKeysDefaultTz();
 
 // ---------- 行 <-> 对象 归一 ----------
 function rowToKey(r) {
@@ -151,6 +155,7 @@ function rowToKey(r) {
   return {
     key: decryptSecret(r.key_enc), tenant: r.tenant, label: r.label,
     enabled: !!r.enabled, rate_limit: r.rate_limit, plan: r.plan,
+    default_timezone: r.default_timezone || null,
     webhook_url: r.webhook_url || null, webhook_verified: !!r.webhook_verified,
     created_at: r.created_at
   };
@@ -183,13 +188,13 @@ function getEnabledKeyForTenant(tenant) {
   const r = db.prepare('SELECT * FROM keys WHERE tenant = ? AND enabled = 1 LIMIT 1').get(tenant);
   return rowToKey(r);
 }
-function createKey({ tenant, label, rate_limit, plan }) {
+function createKey({ tenant, label, rate_limit, plan, default_timezone }) {
   plan = PLANS[plan] ? plan : DEFAULT_PLAN;
   const rate = (typeof rate_limit === 'number' && rate_limit > 0) ? rate_limit : PLANS[plan].rate_limit;
   const key = 'sk_live_' + crypto.randomBytes(18).toString('hex');
   const now = new Date().toISOString();
-  db.prepare('INSERT INTO keys (key_hash, key_enc, tenant, label, enabled, rate_limit, plan, created_at) VALUES (?,?,?,?,1,?,?,?)')
-    .run(hashKey(key), encryptSecret(key), tenant, label || (PLANS[plan].label + ' 密钥'), rate, plan, now);
+  db.prepare('INSERT INTO keys (key_hash, key_enc, tenant, label, enabled, rate_limit, plan, default_timezone, created_at) VALUES (?,?,?,?,1,?,?,?,?)')
+    .run(hashKey(key), encryptSecret(key), tenant, label || (PLANS[plan].label + ' 密钥'), rate, plan, default_timezone || null, now);
   return getKey(key);
 }
 function setKeyEnabled(rawKey, enabled) {
@@ -277,16 +282,17 @@ function listLegacyAlarms() {
     id: r.id, clientId: r.client_id, subscription: r.subscription_json ? JSON.parse(r.subscription_json) : null,
     timestamp: r.timestamp, time: r.time, recurrence: r.recurrence, label: r.label,
     lead_minutes: r.lead_minutes || 0, end: r.end_json ? JSON.parse(r.end_json) : null,
-    fired: !!r.fired, nextTrigger: r.next_trigger, fired_count: r.fired_count || 0
+    fired: !!r.fired, nextTrigger: r.next_trigger, fired_count: r.fired_count || 0,
+    timezone: r.timezone || null
   }));
 }
 function saveLegacyAlarm(a) {
   db.prepare(`INSERT OR REPLACE INTO legacy_alarms
-    (id, client_id, subscription_json, timestamp, time, recurrence, label, lead_minutes, fired, next_trigger, end_json, fired_count)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    (id, client_id, subscription_json, timestamp, time, recurrence, label, lead_minutes, fired, next_trigger, end_json, fired_count, timezone)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(a.id, a.clientId, a.subscription ? JSON.stringify(a.subscription) : null, a.timestamp || 0,
       a.time, a.recurrence || 'none', a.label || '', a.lead_minutes || 0, a.fired ? 1 : 0, a.nextTrigger || 0,
-      a.end ? JSON.stringify(a.end) : null, a.fired_count || 0);
+      a.end ? JSON.stringify(a.end) : null, a.fired_count || 0, a.timezone || 'Asia/Shanghai');
 }
 function deleteLegacyAlarm(clientId, id) {
   return db.prepare('DELETE FROM legacy_alarms WHERE client_id = ? AND id = ?').run(clientId, id).changes > 0;
@@ -410,6 +416,17 @@ function migrateLegacyAlarmsSchema() {
   }
   if (!cols.includes('fired_count')) {
     db.exec('ALTER TABLE legacy_alarms ADD COLUMN fired_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!cols.includes('timezone')) {
+    db.exec("ALTER TABLE legacy_alarms ADD COLUMN timezone TEXT DEFAULT 'Asia/Shanghai'");
+  }
+}
+
+// keys 表补充 default_timezone 列（租户级默认时区，P3-P1-3）。旧库 ALTER 补齐，幂等。
+function migrateKeysDefaultTz() {
+  const cols = db.prepare('PRAGMA table_info(keys)').all().map(c => c.name);
+  if (!cols.includes('default_timezone')) {
+    db.exec("ALTER TABLE keys ADD COLUMN default_timezone TEXT DEFAULT 'Asia/Shanghai'");
   }
 }
 

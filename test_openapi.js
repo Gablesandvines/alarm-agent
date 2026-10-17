@@ -33,6 +33,10 @@ const OTHER_KEY = kO.key;    // tenant: testB（隔离验证）
 const RATE_KEY = kR.key;     // tenant: testA（rate_limit=3）
 
 const PORT = 8099;
+// P1-3 测试需要：为独立租户预置服务端级默认时区（仅该租户生效，不影响既有 testA/testB 基线）。
+// 必须在 spawn 前设置，使子进程继承该环境变量。
+process.env['ALARM_DEFAULT_TZ_testTZenv'] = 'America/Chicago';
+
 const srv = spawn(process.execPath, ['server.js'], { env: { ...process.env, PORT: String(PORT), ALARM_DB: TEST_DB }, cwd: __dirname });
 srv.stderr.on('data', d => process.stderr.write('[server] ' + d));
 
@@ -128,6 +132,24 @@ function assert(cond, name, extra) {
   p = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + NORMAL_KEY }, JSON.stringify({ text: '明天8点开会', now: '2026-10-09T12:00:00+08:00' }));
   j = JSON.parse(p.body);
   assert(j.success && j.alarm.date === '2026-10-10' && j.alarm.time === '08:00', 'now 覆盖：明天=2026-10-10 08:00', JSON.stringify(j.alarm));
+
+  // P0-3：/v1/parse 透传 timezone（IANA），墙钟保持 08:00，datetime 含正确偏移；非法 IANA → 400 invalid_timezone
+  let pTz = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + NORMAL_KEY }, JSON.stringify({ text: '明天8点开会', timezone: 'America/New_York' }));
+  let pTzj = JSON.parse(pTz.body);
+  assert(pTz.status === 200 && pTzj.success && pTzj.alarm.time === '08:00' && pTzj.alarm.timezone === 'America/New_York', 'P0-3 /v1/parse 透传 timezone=America/New_York（墙钟 08:00 不漂移）', JSON.stringify(pTzj.alarm));
+  assert(/[+-]\d{2}:\d{2}$/.test(pTzj.alarm.datetime), 'P0-3 datetime 含 IANA 时区偏移', pTzj.alarm.datetime);
+
+  let pBad = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + NORMAL_KEY }, JSON.stringify({ text: '明天8点开会', timezone: 'Foo/Bar' }));
+  let pBadj = JSON.parse(pBad.body);
+  assert(pBad.status === 400 && pBadj.error && pBadj.error.code === 'invalid_timezone', 'P0-3 非法 timezone=Foo/Bar → 400 invalid_timezone', pBad.status + ' ' + pBad.body);
+
+  // 决策②闭环：空串/纯空白视为缺失 → 回退上海（非 400）
+  let pEmpty = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + NORMAL_KEY }, JSON.stringify({ text: '明天8点开会', timezone: '' }));
+  let pEmptyj = JSON.parse(pEmpty.body);
+  assert(pEmpty.status === 200 && pEmptyj.success && pEmptyj.alarm.timezone === 'Asia/Shanghai', 'P0-3 空串 timezone="" → 200 回退上海（非 400）', pEmpty.status + ' ' + JSON.stringify(pEmptyj.alarm));
+  let pWs = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + NORMAL_KEY }, JSON.stringify({ text: '明天8点开会', timezone: '   ' }));
+  let pWsj = JSON.parse(pWs.body);
+  assert(pWs.status === 200 && pWsj.success && pWsj.alarm.timezone === 'Asia/Shanghai', 'P0-3 纯空白 timezone="   " → 200 回退上海（非 400）', pWs.status + ' ' + JSON.stringify(pWsj.alarm));
 
   // 限流：用 rate_limit=3 的 key 连续发 5 次，后两次应 429
   let got429 = false, okCount = 0;
@@ -288,6 +310,30 @@ function assert(cond, name, extra) {
   assert(Math.abs(leadj.next_trigger - (wall - 30 * 60000)) < 2000, 'daily+lead: next_trigger = 墙钟 - 30min（提前提醒生效）', JSON.stringify({ got: leadj.next_trigger, exp: wall - 1800000 }));
   await req('DELETE', '/v1/alarms/' + leadj.id, { Authorization: 'Bearer ' + NORMAL_KEY }, null);
 
+  // P0-4：/api/alarm 持久化 timezone，且重复闹钟触发后按该时区（America/New_York）重排 nextTrigger
+  const apiClientId = 'tzclient-' + Date.now();
+  const legacyId = 'tzlegacy-' + Date.now();
+  const pastTs = Math.floor((Date.now() - 60000) / 1000); // 1 分钟前 → nextTrigger 在过去，fire-loop 立即可触发并重排
+  let apiAlarm = await req('POST', '/api/alarm', {}, JSON.stringify({
+    clientId: apiClientId, id: legacyId, time: '08:00', recurrence: 'daily', timezone: 'America/New_York', timestamp: pastTs, label: 'ny-daily'
+  }));
+  assert(apiAlarm.status === 200 && JSON.parse(apiAlarm.body).ok === true, 'P0-4 POST /api/alarm → 200 ok', apiAlarm.status);
+
+  const leg = db.listLegacyAlarms().find(x => x.clientId === apiClientId);
+  assert(leg && leg.timezone === 'America/New_York', 'P0-4 遗留闹钟持久化 timezone=America/New_York', JSON.stringify(leg));
+
+  const reArmed = await waitFor(() => {
+    const a = db.listLegacyAlarms().find(x => x.clientId === apiClientId);
+    return a && a.nextTrigger && a.nextTrigger > Date.now();
+  }, 5000);
+  assert(reArmed, 'P0-4 重复闹钟触发后按 America/New_York 重排到未来 nextTrigger', 'clientId=' + apiClientId);
+  if (reArmed) {
+    const a = db.listLegacyAlarms().find(x => x.clientId === apiClientId);
+    const exp = computeNext('08:00', 'daily', pastTs * 1000, 'America/New_York');
+    assert(Math.abs(a.nextTrigger - exp) < 2000, 'P0-4 nextTrigger 与 scheduler.computeNext(America/New_York) 一致', JSON.stringify({ got: a.nextTrigger, exp }));
+  }
+  await req('POST', '/api/alarm/remove', {}, JSON.stringify({ clientId: apiClientId, id: legacyId }));
+
   // 投递退避：失败(500)的 Webhook 进入重试（attempt 递增、不误标成功、不双发）
   const dFailId = db.enqueueDelivery({ tenant: 'testA', url: 'http://localhost:' + RECEIVER_FAIL_PORT, body: '{}', sig: 'x' });
   const retried = await waitFor(() => {
@@ -330,6 +376,26 @@ function assert(cond, name, extra) {
   assert(kd.status === 200 && JSON.parse(kd.body).enabled === false, 'POST /v1/keys/:key/disable → 200', kd.status);
   let kd2 = await req('POST', '/v1/keys/' + newKey + '/disable', { Authorization: 'Bearer ' + OTHER_KEY }, null);
   assert(kd2.status === 404, '禁用不属于本租户的密钥 → 404', kd2.status);
+
+  // P1-3：时区回退链 —— 租户 default_timezone > ALARM_DEFAULT_TZ_<tenant> 环境变量 > Asia/Shanghai
+  // (a) 密钥携带 default_timezone：解析缺 timezone 时回退到它
+  let dtz = await req('POST', '/v1/keys', { Authorization: 'Bearer ' + NORMAL_KEY }, JSON.stringify({ label: '默认时区密钥', plan: 'free', default_timezone: 'Europe/Paris' }));
+  let dtzj = JSON.parse(dtz.body);
+  assert(dtz.status === 201 && dtzj.default_timezone === 'Europe/Paris', 'P1-3 创建密钥带 default_timezone → 201', JSON.stringify(dtzj));
+  let pDtz = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + dtzj.key }, JSON.stringify({ text: '明天8点开会' }));
+  let pDtzj = JSON.parse(pDtz.body);
+  assert(pDtz.status === 200 && pDtzj.alarm && pDtzj.alarm.timezone === 'Europe/Paris' && pDtzj.alarm.time === '08:00', 'P1-3 缺 timezone 回退到租户 default_timezone=Europe/Paris', JSON.stringify(pDtzj.alarm));
+
+  // (b) 环境变量 ALARM_DEFAULT_TZ_<tenant>：该租户密钥无 default_timezone 时回退到它（独立租户，避免污染基线）
+  const envKey = db.createKey({ tenant: 'testTZenv', label: 'env-tz', rate_limit: 100, plan: 'free' });
+  let pEnv = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + envKey.key }, JSON.stringify({ text: '明天8点开会' }));
+  let pEnvj = JSON.parse(pEnv.body);
+  assert(pEnv.status === 200 && pEnvj.alarm && pEnvj.alarm.timezone === 'America/Chicago' && pEnvj.alarm.time === '08:00', 'P1-3 缺 timezone 回退到 ALARM_DEFAULT_TZ_testTZenv=America/Chicago', JSON.stringify(pEnvj.alarm));
+
+  // (c) 显式 timezone 优先于一切回退
+  let pEx = await req('POST', '/v1/parse', { Authorization: 'Bearer ' + dtzj.key }, JSON.stringify({ text: '明天8点开会', timezone: 'Asia/Tokyo' }));
+  let pExj = JSON.parse(pEx.body);
+  assert(pEx.status === 200 && pExj.alarm && pExj.alarm.timezone === 'Asia/Tokyo', 'P1-3 显式 timezone 优先于 default_timezone', JSON.stringify(pExj.alarm));
 
   // 租户隔离：OTHER_KEY 看不到 NORMAL 的密钥
   let klo = await req('GET', '/v1/keys', { Authorization: 'Bearer ' + OTHER_KEY }, null);

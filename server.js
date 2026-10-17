@@ -79,6 +79,29 @@ function sendJSON(res, obj, code = 200) {
   res.end(JSON.stringify(obj));
 }
 
+// ---------- 时区校验 / 归一（P3：P0-3 校验 + 回退链来源） ----------
+// 统一口径（见 docs/system_design.md §7）：
+//   - null / undefined / 空串("") / 纯空白 → 返回 undefined（交由回退链，不视为非法）
+//   - 非空串用 Intl 试探，抛错即非法 IANA 名 → 返回 null（调用方应返回 400 invalid_timezone）
+//   - 合法 → 返回该 tz 字符串
+function normalizeTz(tz) {
+  if (tz === undefined || tz === null) return undefined;
+  if (typeof tz !== 'string') return undefined;
+  if (tz.trim() === '') return undefined;
+  try { new Intl.DateTimeFormat('en', { timeZone: tz }); return tz; }
+  catch (e) { return null; }
+}
+
+// 计算生效时区（仅服务端 /v1/* 与显式入口使用）：请求 timezone > 租户 keys.default_timezone > 环境变量 ALARM_DEFAULT_TZ_<tenant> > Asia/Shanghai
+// 返回 { tz } 或 { error: 'invalid_timezone' }（显式提供了非法 IANA 名时）
+function resolveEffectiveTz(provided, key) {
+  const norm = normalizeTz(provided);
+  if (norm === null) return { error: 'invalid_timezone' };
+  const envTz = key && key.tenant ? process.env['ALARM_DEFAULT_TZ_' + key.tenant] : undefined;
+  const tz = norm || (key && key.default_timezone) || envTz || 'Asia/Shanghai';
+  return { tz };
+}
+
 // ---------- LLM 长尾兜底解析（预留 key 位，最大化降成本） ----------
 // 仅当配置了 ALARM_LLM_KEY 时才调用；否则返回 null，由上层降级为规则结果。
 async function llmParse(text) {
@@ -311,7 +334,13 @@ async function handleOpenApi(req, res) {
       else nowArg = body.now;
     }
     const t0 = Date.now();
-    const result = await resolveParse(text, nowArg != null ? { now: nowArg, context: body.context } : (body.context ? { context: body.context } : undefined));
+    // 时区：显式携带则校验 IANA（非法→400 invalid_timezone）；否则回退链：租户默认 > ALARM_DEFAULT_TZ_<tenant> > 上海
+    const tzRes = resolveEffectiveTz(body.timezone, k);
+    if (tzRes.error) return standardError(res, tzRes.error, 'timezone 不是合法的 IANA 时区名', 400, reqId);
+    const opts = { tz: tzRes.tz };
+    if (nowArg != null) opts.now = nowArg;
+    if (body.context) opts.context = body.context;
+    const result = await resolveParse(text, opts);
     const elapsed = Date.now() - t0;
     db.incrMetric('parse_total', 1);
     db.incrMetric('parse_latency_sum_ms', elapsed);
@@ -373,11 +402,15 @@ async function handleOpenApi(req, res) {
         const ex = db.findAlarmByIdempotency(k.tenant, body.idempotency_key);
         if (ex) return sendJSON(res, { ...ex, idempotent: true, request_id: reqId });
       }
+      // 时区回退链：请求 timezone > 租户默认 > ALARM_DEFAULT_TZ_<tenant> > 上海（显式非法 IANA → 400）
+      const tzRes = resolveEffectiveTz(body.timezone, k);
+      if (tzRes.error) return standardError(res, tzRes.error, 'timezone 不是合法的 IANA 时区名', 400, reqId);
+      const effectiveTz = tzRes.tz;
       let alarm;
       if (text) {
         let nowArg = undefined;
         if (body.now != null) nowArg = typeof body.now === 'number' ? (body.now < 1e12 ? body.now * 1000 : body.now) : body.now;
-        const r = await resolveParse(text, nowArg != null ? { now: nowArg, context: body.context } : (body.context ? { context: body.context } : undefined));
+        const r = await resolveParse(text, nowArg != null ? { now: nowArg, tz: effectiveTz, context: body.context } : { tz: effectiveTz, context: body.context });
         if (!r.success) return sendJSON(res, {
           success: false, needs_clarification: r.needs_clarification !== false,
           clarification: r.clarification || null, ambiguities: r.ambiguities || [], request_id: reqId
@@ -386,7 +419,7 @@ async function handleOpenApi(req, res) {
       } else if (body.time) {
         alarm = {
           timestamp: null, datetime: null, date: body.date || null, time: body.time,
-          recurrence: body.recurrence || 'none', timezone: body.timezone || 'Asia/Shanghai',
+          recurrence: body.recurrence || 'none', timezone: effectiveTz,
           label: body.label || '', enabled: true, lead_minutes: body.lead_minutes || 0
         };
       } else {
@@ -397,7 +430,7 @@ async function handleOpenApi(req, res) {
       if (body.time) alarm.time = body.time;
       if (body.date) alarm.date = body.date;
       if (body.label != null) alarm.label = body.label;
-      if (body.timezone) alarm.timezone = body.timezone;
+      if (body.timezone) alarm.timezone = effectiveTz;
       if (body.lead_minutes != null) alarm.lead_minutes = body.lead_minutes;
       alarm.enabled = body.enabled !== false;
       const rec = {
@@ -436,7 +469,11 @@ async function handleOpenApi(req, res) {
       if (body.time != null) rec.alarm.time = body.time;
       if (body.date != null) rec.alarm.date = body.date;
       if (body.label != null) rec.alarm.label = body.label;
-      if (body.timezone != null) rec.alarm.timezone = body.timezone;
+      if (body.timezone != null) {
+        const norm = normalizeTz(body.timezone);
+        if (norm === null) return standardError(res, 'invalid_timezone', 'timezone 不是合法的 IANA 时区名', 400, reqId);
+        rec.alarm.timezone = norm;
+      }
       if (body.lead_minutes != null) rec.alarm.lead_minutes = body.lead_minutes;
       if (body.enabled !== undefined) rec.enabled = !!body.enabled;
       rec.alarm.enabled = rec.enabled;
@@ -475,7 +512,7 @@ async function handleOpenApi(req, res) {
     }
     if (!sub && req.method === 'POST') {
       const body = await readBody(req);
-      const rec = db.createKey({ tenant: k.tenant, label: (body.label || '').trim() || null, rate_limit: body.rate_limit, plan: body.plan });
+      const rec = db.createKey({ tenant: k.tenant, label: (body.label || '').trim() || null, rate_limit: body.rate_limit, plan: body.plan, default_timezone: body.default_timezone || null });
       return sendJSON(res, { ...rec, request_id: reqId }, 201);
     }
     return standardError(res, 'method_not_allowed', '该方法不被允许', 405, reqId);
@@ -533,12 +570,14 @@ async function handleApi(req, res) {
     if (url === '/api/alarm' && req.method === 'POST') {
       const body = await readBody(req);
       const sub = db.listSubs().find(x => x.id === body.clientId);
+      // 时区：参考 App 前端恒发合法 IANA；非法/缺失则兜底上海（/api/* 无租户，不 400）
+      const tz = normalizeTz(body.timezone) || 'Asia/Shanghai';
       const alarm = {
         id: body.id || ('al' + Date.now() + Math.random().toString(36).slice(2, 5)),
         clientId: body.clientId,
         subscription: sub ? sub.subscription : body.subscription,
         timestamp: body.timestamp, time: body.time, recurrence: body.recurrence || 'none',
-        label: body.label || '', lead_minutes: body.lead_minutes || 0,
+        label: body.label || '', lead_minutes: body.lead_minutes || 0, timezone: tz,
         end: body.end || null, fired: false, fired_count: body.fired_count || 0, nextTrigger: (body.timestamp || 0) * 1000
       };
       db.saveLegacyAlarm(alarm);
@@ -557,7 +596,13 @@ async function handleApi(req, res) {
       const body = await readBody(req);
       const text = (body.text || '').trim();
       if (!text) return appError(res, 'bad_request', 'missing text', 400);
-      const result = await resolveParse(text, body.context ? { context: body.context } : undefined);
+      // 时区：显式携带则校验 IANA（非法→400 invalid_timezone）；缺失兜底上海（/api/* 无租户）
+      const norm = normalizeTz(body.timezone);
+      if (norm === null) return appError(res, 'invalid_timezone', 'timezone 不是合法的 IANA 时区名', 400);
+      const tz = norm || 'Asia/Shanghai';
+      const opts = { tz };
+      if (body.context) opts.context = body.context;
+      const result = await resolveParse(text, opts);
       return sendJSON(res, { ...result, request_id: reqId });
     }
     return appError(res, 'not_found', 'not found', 404);

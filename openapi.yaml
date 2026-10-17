@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 闹钟 Agent 开放 API
-  version: 1.0.0
+  version: 1.5.0
   description: >
     把"自然语言"解析为"结构化闹钟时间"的开放接口（B 端定时能力平台）。规则引擎优先（置信度 ≥ 0.85 零成本直接返回），
     仅长尾歧义在配置了 LLM Key 时走 LLM 兜底。v1.2 起新增"托管闹钟"能力：调用方无需自建存储，
@@ -10,6 +10,9 @@ info:
     （带 HMAC 签名 + 重试），并提供按 Key 的调用/触发用量统计，为计费打地基。
     v1.4（Phase 4）新增「开发者门户 + 计费套餐 + 数据库化」：可自助管理 API 密钥（/v1/keys）、三档套餐
     （free/pro/enterprise，含月度解析配额）、持久层统一迁移至 SQLite（data/alarm.db），并提供开发者控制台 /portal。
+    v1.5（Phase 5）新增「时区真正可用化」：解析与触发时区脱离部署机时区、以调用方传入或租户默认时区为准。
+    所有 /v1/* 接口支持 `timezone`（IANA 名，如 America/New_York）；非法 IANA 名返回 400 invalid_timezone，缺失时按
+    "请求 time_zone → 租户 default_timezone → 环境变量 ALARM_DEFAULT_TZ_<tenant> → Asia/Shanghai" 回退。
   contact:
     name: 闹钟 Agent
 servers:
@@ -748,6 +751,12 @@ components:
           enum: [free, pro, enterprise]
           description: "计费套餐：free=60/min,5k/月；pro=600/min,100k/月；enterprise=6000/min,不限"
           example: "pro"
+        default_timezone:
+          type: string
+          nullable: true
+          description: 该密钥所属租户的默认时区（IANA 名）。解析/创建闹钟时若请求未显式携带 timezone，则回退到此值；再缺失则按 ALARM_DEFAULT_TZ_<tenant> 环境变量、最后 Asia/Shanghai。
+          default: "Asia/Shanghai"
+          example: "America/New_York"
         created_at: { type: string, format: date-time, example: "2026-10-12T10:00:00.000Z" }
     KeyCreate:
       type: object
@@ -765,6 +774,12 @@ components:
           type: integer
           description: 自定义每分钟限额（留空则使用套餐默认值）
           example: 600
+        default_timezone:
+          type: string
+          nullable: true
+          description: 该密钥所属租户的默认时区（IANA 名）。留空则默认 Asia/Shanghai。创建后解析/创建闹钟缺 timezone 时回退到此值与 ALARM_DEFAULT_TZ_<tenant> 环境变量。
+          default: "Asia/Shanghai"
+          example: "America/New_York"
     PlanConfig:
       type: object
       description: 计费套餐配置（参考；实际以服务端为准）
@@ -795,13 +810,19 @@ components:
         request_id: { type: string }
   responses:
     BadRequest:
-      description: 请求参数错误（如缺少 text / 超长）
+      description: 请求参数错误（如缺少 text / 超长 / timezone 不是合法 IANA 名）
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
           example:
             error: { code: "bad_request", message: "缺少必填字段 text" }
             request_id: "req_01HX..."
+          examples:
+            bad_timezone:
+              summary: 非法 IANA 时区名
+              value:
+                error: { code: "invalid_timezone", message: "timezone 不是合法的 IANA 时区名" }
+                request_id: "req_01HX..."
     Unauthorized:
       description: 缺少或无效的 API Key
       content:

@@ -6,6 +6,18 @@
 (function (global) {
   'use strict';
 
+  // ---- 双端取用 scheduler.js 的时区换算（惰性，免疫 <script> 加载顺序） ----
+  // 浏览器：index.html 已挂 window.Scheduler；Node：同目录 require。
+  // 所有墙钟↔UTC、偏移、日历日拆分均调用 scheduler，严禁本文件新造时区换算函数。
+  var _sched;
+  function sched() {
+    if (_sched !== undefined) return _sched;
+    _sched = (typeof window !== 'undefined' && window.Scheduler)
+      ? window.Scheduler
+      : (typeof require === 'function' ? require('./scheduler.js') : null);
+    return _sched;
+  }
+
   function cnNum(s) {
     if (s === undefined || s === null) return null;
     s = String(s);
@@ -347,7 +359,12 @@
 
     // ---- 6.5 绝对日期锚点（含节假日） ----
     // 支持 opts.now 覆盖"当前时间"基准（开放 API 的确定性测试/回放）；默认取真实当前时间
+    // tz：贯穿全函数的时区（P3）。默认上海；显式 opts.tz 优先（开放 API / 前端检测传入）。
+    const tz = (opts && opts.tz) || 'Asia/Shanghai';
     const now = (opts && opts.now != null) ? new Date(opts.now) : new Date();
+    const nowEpoch = now.getTime();
+    // 用户在 tz 下的"今天"日历日（跨时区基准，避免 UTC 容器下错位）。所有换算走 scheduler。
+    const todayTz = sched().tzDateParts(nowEpoch, tz);
     let absDate = parseAbsDate(text) || parseHoliday(text, now);
 
     // ---- 6.6 多轮澄清：用上一轮已理解的锚点补全本轮（结构化合并，避免盲目拼接丢上下文） ----
@@ -381,20 +398,19 @@
     }
 
     // ---- 7. 组合时间 ----
-    const tz = 'Asia/Shanghai';
     let target = null;
 
     if (absDate) {
-      // 绝对日期优先；未给年份/月份时按"已过期则顺延"补全
+      // 绝对日期优先；未给年份/月份时按"已过期则顺延"补全（基于用户在 tz 下的"今天"）
       let year = absDate.year, month = absDate.month, day = absDate.day;
-      const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const todayNum = todayTz.y * 10000 + todayTz.mo * 100 + todayTz.d;
       if (year === undefined) {
-        year = now.getFullYear();
-        if (new Date(year, month - 1, day) < today0) year += 1;
+        year = todayTz.y;
+        if (year * 10000 + month * 100 + day < todayNum) year += 1;
       }
       if (month === undefined) {
-        month = now.getMonth() + 1;
-        if (new Date(year, month - 1, day) < today0) {
+        month = todayTz.mo;
+        if (year * 10000 + month * 100 + day < todayNum) {
           month += 1;
           if (month > 12) { month = 1; year += 1; }
         }
@@ -408,7 +424,8 @@
         if (todAdd === 12 && h < 12) h += 12;
         if (hour === 12 && todConsumed && /中午/.test(todConsumed)) h = 12;
         if (hour === 12 && todConsumed && /(凌晨|早上|上午)/.test(todConsumed)) h = 0;
-        target = new Date(base.getFullYear(), base.getMonth(), base.getDate(), h, minute, 0, 0);
+        // 墙钟 → UTC：一律经 scheduler.wallToEpoch（按 tz 计算，含 DST 修正）
+        target = new Date(sched().wallToEpoch(year, month, day, h, minute, tz));
         confidence = Math.max(confidence, 0.9);
       }
     } else if (relMatch) {
@@ -420,25 +437,29 @@
       target = new Date(now.getTime() + ms);
       confidence = 0.9;
     } else {
-      let base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      // 以用户在 tz 下的"今天"为基准，所有日历日步进走 scheduler.addDays，避免与闹钟时区错位
+      let baseY = todayTz.y, baseM = todayTz.mo, baseD = todayTz.d;
       if (weekTarget !== null) {
         // 以「周一为一周起点」计算：本周X / 下周X / 裸写X
-        const curMon = (now.getDay() + 6) % 7;          // 周一=0 .. 周日=6
+        const curMon = (new Date(Date.UTC(todayTz.y, todayTz.mo - 1, todayTz.d)).getUTCDay() + 6) % 7; // 周一=0 .. 周日=6
         const tgtMon = (weekTarget + 6) % 7;
         const daysToThisWeekX = tgtMon - curMon;        // 到"本周该星期"的天数（可为负）
-        const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const thisWeekX = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysToThisWeekX);
-        let addDays;
+        const todayNum = todayTz.y * 10000 + todayTz.mo * 100 + todayTz.d;
+        const thisWeekX = sched().addDays(todayTz.y, todayTz.mo, todayTz.d, daysToThisWeekX);
+        const thisWeekXNum = thisWeekX.y * 10000 + thisWeekX.mo * 100 + thisWeekX.d;
+        let addDaysCount;
         if (weekNext) {
-          addDays = daysToThisWeekX + 7;                // 「下X」= 下一周的那一天
-        } else if (thisWeekX >= today0) {
-          addDays = daysToThisWeekX;                    // 本周尚未过去 → 本周X
+          addDaysCount = daysToThisWeekX + 7;                // 「下X」= 下一周的那一天
+        } else if (thisWeekXNum >= todayNum) {
+          addDaysCount = daysToThisWeekX;                    // 本周尚未过去 → 本周X
         } else {
-          addDays = daysToThisWeekX + 7;                // 本周已过 → 顺延到下周
+          addDaysCount = daysToThisWeekX + 7;                // 本周已过 → 顺延到下周
         }
-        base = new Date(now.getFullYear(), now.getMonth(), now.getDate() + addDays);
+        const base = sched().addDays(todayTz.y, todayTz.mo, todayTz.d, addDaysCount);
+        baseY = base.y; baseM = base.mo; baseD = base.d;
       } else {
-        base = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset);
+        const base = sched().addDays(todayTz.y, todayTz.mo, todayTz.d, dayOffset);
+        baseY = base.y; baseM = base.mo; baseD = base.d;
       }
       if (hour === null) {
         target = null;
@@ -447,7 +468,8 @@
         if (todAdd === 12 && h < 12) h += 12;
         if (hour === 12 && todConsumed && /中午/.test(todConsumed)) h = 12;
         if (hour === 12 && todConsumed && /(凌晨|早上|上午)/.test(todConsumed)) h = 0;
-        target = new Date(base.getFullYear(), base.getMonth(), base.getDate(), h, minute, 0, 0);
+        // 墙钟 → UTC：一律经 scheduler.wallToEpoch（按 tz 计算，含 DST 修正）
+        target = new Date(sched().wallToEpoch(baseY, baseM, baseD, h, minute, tz));
         confidence = 0.85;
         if (todConsumed) confidence += 0.05;
       }
@@ -501,19 +523,22 @@
     }
 
     const pad = n => String(n).padStart(2, '0');
-    const off = -now.getTimezoneOffset();
-    const sign = off >= 0 ? '+' : '-';
-    const oh = pad(Math.floor(Math.abs(off) / 60));
-    const om = pad(Math.abs(off) % 60);
-    const iso = `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(target.getMinutes())}:00${sign}${oh}:${om}`;
+    // 时区墙钟与偏移一律来自 scheduler（不新造时区换算）：日期/时间按 tz 墙钟，偏移按 tzOffsetAt
+    const tp = sched().tzDateParts(target.getTime(), tz);            // tz 下的日历日 {y,mo,d}
+    const whm = sched().wallClockAt(target.getTime(), tz).split(':'); // tz 下的墙钟 HH:MM
+    const offMin = Math.round(sched().tzOffsetAt(tz, target.getTime()) / 60000);
+    const sign = offMin >= 0 ? '+' : '-';
+    const oh = pad(Math.floor(Math.abs(offMin) / 60));
+    const om = pad(Math.abs(offMin) % 60);
+    const iso = `${tp.y}-${pad(tp.mo)}-${pad(tp.d)}T${whm[0]}:${whm[1]}:00${sign}${oh}:${om}`;
 
     return {
       success: true, raw: text, intent: 'create',
       alarm: {
         timestamp: Math.floor(target.getTime() / 1000), // Unix 秒级时间戳（UTC）
         datetime: iso,
-        date: `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`,
-        time: `${pad(target.getHours())}:${pad(target.getMinutes())}`,
+        date: `${tp.y}-${pad(tp.mo)}-${pad(tp.d)}`,
+        time: `${whm[0]}:${whm[1]}`,
         recurrence: recurrence,
         timezone: tz,
         lead_minutes: leadMin || 0,

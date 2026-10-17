@@ -1,0 +1,39 @@
+sequenceDiagram
+    participant U as 浏览器(index.html)
+    participant N as nlu.js(parseAlarm)
+    participant S as server.js(/api/alarm)
+    participant D as db.js(saveLegacyAlarm)
+    participant F as fire 循环(1s)
+
+    U->>U: getUserTz() = 自动检测(resolvedOptions) 或 localStorage 覆盖
+    U->>N: parseAlarm(text, {tz:getUserTz()})
+    N->>N: sched().wallToEpoch(...) 算 target（tz 墙钟→UTC）
+    N-->>U: alarm.timezone = getUserTz()
+    U->>U: saveAlarm: item.timezone = alarm.timezone
+    U->>S: POST /api/alarm {timestamp,time,...,timezone:item.timezone}
+    S->>S: isValidTimezone? 否则兜底上海
+    S->>D: saveLegacyAlarm({...,timezone})
+    D-->>S: ok
+    Note over F: 每秒扫描 legacy_alarms
+    F->>F: tz = a.timezone || 'Asia/Shanghai'
+    F->>F: computeNext(a.time,a.recurrence,a.timestamp*1000,tz)
+    F->>F: 到点 → Web Push（墙钟按 tz 正确，含 DST 修正）
+
+---
+
+sequenceDiagram
+    participant C as 调用方
+    participant S as server.js(/v1/parse)
+    participant K as db.getKey(provided)
+    participant N as nlu.js(parseAlarm)
+    participant D as db.js(/v1/alarms 可选)
+
+    C->>S: POST /v1/parse {text, timezone?}
+    S->>K: 取租户密钥（含 default_timezone）
+    S->>S: effectiveTz = body.timezone || k.default_timezone || env(ALARM_DEFAULT_TZ_<tenant>) || 'Asia/Shanghai'
+    S->>S: isValidTimezone(body.timezone)? 否则 400 invalid_timezone
+    S->>N: resolveParse(text, {now?, context?, tz: effectiveTz})
+    N->>N: sched().wallToEpoch/tzOffsetAt/tzDateParts（tz 墙钟→UTC）
+    N-->>S: alarm.timezone = effectiveTz
+    S-->>C: 200 {alarm.timezone, ...}
+    Note over S,D: 若同时 POST /v1/alarms，alarm_json 已含 timezone，fire 循环 nextTriggerMs(alarm) 按 tz 重排

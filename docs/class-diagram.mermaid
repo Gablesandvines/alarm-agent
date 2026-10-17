@@ -1,0 +1,53 @@
+classDiagram
+    class Scheduler {
+        <<scheduler.js · 不变>>
+        +wallToEpoch(y,mo,d,h,mi,tz) Number
+        +tzOffsetAt(tz,epoch) Number
+        +tzDateParts(epoch,tz) Object
+        +nextTriggerMs(alarm,nowOverride) Number
+    }
+    class Nlu {
+        <<nlu.js · P0-1/P0-2 改>>
+        -_sched : lazy window.Scheduler | require('./scheduler.js')
+        +parseAlarm(text, opts) Object
+        +opts.tz : String
+    }
+    class Server {
+        <<server.js · P0-3/4/5/P1-3 改>>
+        +isValidTimezone(tz) Boolean
+        +handleOpenApi() : /v1/parse,/v1/alarms,/v1/keys
+        +handleApi() : /api/parse,/api/alarm
+        +fireLoop() : tz = a.timezone || 'Asia/Shanghai'
+    }
+    class Db {
+        <<db.js · P0-4/P1-3 改>>
+        +createKey({default_timezone}) Row
+        +saveLegacyAlarm(a) void
+        +listLegacyAlarms() Row[]
+        +saveAlarm(rec) void
+    }
+    class IndexApp {
+        <<index.html · P0-4/P1-1/P1-2 改>>
+        +getUserTz() String
+        +doParse() void
+        +syncAlarmToServer(action,item) void
+        +renderList() void
+    }
+    class Key {
+        <<SQLite keys · 增列>>
+        +default_timezone : TEXT
+    }
+    class LegacyAlarm {
+        <<SQLite legacy_alarms · 增列>>
+        +timezone : TEXT
+    }
+
+    Nlu ..> Scheduler : 复用(wallToEpoch/tzOffsetAt/tzDateParts)
+    Server ..> Nlu : resolveParse(text,{tz})
+    Server ..> Db : createKey / saveLegacyAlarm / saveAlarm
+    Server ..> Scheduler : computeNext / nextTriggerMs(fire)
+    IndexApp ..> Nlu : parseAlarm(text,{tz})
+    IndexApp ..> Server : /api/parse,/api/alarm
+    Db o-- Key
+    Db o-- LegacyAlarm
+    Server ..> Scheduler : tz 贯穿解析→持久化→fire

@@ -81,7 +81,7 @@
     <!-- 密钥管理 -->
     <div class="card">
       <h2><span class="n">2</span> API 密钥</h2>
-      <table id="keysTable"><thead><tr><th>密钥</th><th>名称</th><th>套餐</th><th>限额/min</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
+      <table id="keysTable"><thead><tr><th>密钥</th><th>名称</th><th>套餐</th><th>限额/min</th><th>默认时区</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table>
       <div style="margin-top:14px;border-top:1px dashed var(--line);padding-top:14px">
         <div class="row">
           <div><label>新建密钥名称</label><input id="newLabel" placeholder="例如：生产环境" /></div>
@@ -89,6 +89,7 @@
             <select id="newPlan"><option value="free">免费版（60/min，5k/月）</option><option value="pro">专业版（600/min，100k/月）</option><option value="enterprise">企业版（6000/min，不限）</option></select>
           </div>
           <div><label>自定义限额/min（可选）</label><input id="newRate" type="number" placeholder="留空=套餐默认" /></div>
+          <div><label>默认时区（可选）</label><input id="newTz" placeholder="IANA 名，如 America/New_York，留空=Asia/Shanghai" /></div>
         </div>
         <div class="btnrow"><button onclick="createKey()">＋ 创建密钥</button><span class="msg" id="keyMsg"></span></div>
       </div>
@@ -173,6 +174,7 @@ async function loadKeys(){
     const tr=document.createElement('tr');
     tr.innerHTML=`<td><code>${k.key}</code></td><td>${esc(k.label||'')}</td>
       <td><span class="pill">${k.plan}</span></td><td>${k.rate_limit}/min</td>
+      <td><code>${esc(k.default_timezone||'Asia/Shanghai')}</code></td>
       <td>${k.enabled?'<span class="pill g">启用</span>':'<span class="pill r">禁用</span>'}</td>
       <td>${k.enabled?'<button class="danger" onclick="toggleKey(\''+k.key+'\',false)">禁用</button>':'<button class="sec" onclick="toggleKey(\''+k.key+'\',true)">启用</button>'}</td>`;
     tb.appendChild(tr);
@@ -187,11 +189,12 @@ async function createKey(){
   const label=$('newLabel').value.trim();
   const plan=$('newPlan').value;
   const rate=parseInt($('newRate').value,10);
-  const body={ plan }; if(label)body.label=label; if(rate>0)body.rate_limit=rate;
+  const tz=$('newTz').value.trim();
+  const body={ plan }; if(label)body.label=label; if(rate>0)body.rate_limit=rate; if(tz)body.default_timezone=tz;
   const { status, j } = await api('POST','/v1/keys',body);
   if(status===201){
-    setMsg('keyMsg','已创建：'+j.key+'（请妥善保存，仅显示一次）','ok');
-    $('newLabel').value=''; $('newRate').value='';
+    setMsg('keyMsg','已创建：'+j.key+'（请妥善保存，仅显示一次）'+(j.default_timezone?' 默认时区='+j.default_timezone:''),'ok');
+    $('newLabel').value=''; $('newRate').value=''; $('newTz').value='';
     await loadKeys();
   } else setMsg('keyMsg','创建失败：'+(j&&j.error?j.error.message:status),'bad');
 }

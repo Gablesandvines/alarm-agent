@@ -143,6 +143,19 @@
   </div>
 
   <div class="card">
+    <div class="label">时区偏好（P3）</div>
+    <div class="perm">
+      <span class="st" id="tzText">自动检测</span>
+      <button class="small ghost" id="tzReset">恢复自动</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="tzSearch" placeholder="搜索时区，如 Asia/Tokyo / 东京" style="flex:1">
+      <select id="tzSelect" style="flex:1;max-width:240px"></select>
+    </div>
+    <div id="tzHint" style="font-size:12px;color:var(--sub);margin-top:6px">自动检测你的浏览器时区；可手动覆盖。覆盖后新建闹钟按该时区解析与触发。</div>
+  </div>
+
+  <div class="card">
     <div class="label">我的闹钟（<span id="cnt">0</span>）</div>
     <div id="list"><div class="empty">还没有闹钟，先解析一句话试试。</div></div>
   </div>
@@ -163,8 +176,8 @@
 </div>
 <div class="toast" id="toast"></div>
 
-<script src="nlu.js"></script>
 <script src="scheduler.js"></script>
+<script src="nlu.js"></script>
 <script>
 const STORE='alarm_agent_alarms';
 let alarms=[];
@@ -177,6 +190,27 @@ function save(){ localStorage.setItem(STORE, JSON.stringify(alarms)); }
 const pad=n=>String(n).padStart(2,'0');
 const WD=['周日','周一','周二','周三','周四','周五','周六'];
 function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
+
+// ---- 时区（P3）：自动检测 + localStorage 覆盖 + 恢复自动 ----
+// 1) 自动检测浏览器时区；2) localStorage('alarm_agent_tz') 手动覆盖优先；3) 清空覆盖即恢复自动；兜底上海
+function getUserTz(){
+  let detected = null;
+  try { detected = Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch(e){ detected = null; }
+  const override = localStorage.getItem('alarm_agent_tz');
+  if (override && override.trim() !== '') return override;   // 手动覆盖优先
+  return detected || 'Asia/Shanghai';                         // 否则自动检测，兜底上海
+}
+// 时区缩写（如 EDT / JST / CST），用于列表/预览紧凑展示
+function tzShort(tz){
+  try { const p = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date());
+    const n = p.find(x => x.type === 'timeZoneName'); return n ? n.value : tz; } catch(e){ return tz; }
+}
+// 时区完整标签：缩写 + IANA（如 "EDT · America/New_York"）
+function tzLabel(tz){ const t = tz || 'Asia/Shanghai'; return tzShort(t) + ' · ' + t; }
+// 全部 IANA 时区（用于偏好面板搜索）；不支持时给内置常用列表兜底
+function allTimezones(){
+  try { return Intl.supportedValuesOf('timeZone'); } catch(e){ return null; }
+}
 
 function computeNextTrigger(a){
   const lead=(a.lead_minutes||0)*60000;
@@ -252,10 +286,12 @@ function renderPreview(){
     const srcBadge=`<div class="b"><div class="k">来源</div><div class="v ${currentSource==='llm'?'ok':''}">${currentSource==='llm'?'🌐 LLM 兜底':'本地规则'}</div></div>`;
     const leadBadge = a.lead_minutes>0 ? `<div class="b"><div class="k">提前</div><div class="v">${a.lead_minutes} 分钟</div></div>` : '';
     const endBadge = a.end ? `<div class="b"><div class="k">结束</div><div class="v">${endLabel(a.end)}</div></div>` : '';
+    const tzBadge = `<div class="b"><div class="k">时区</div><div class="v">${tzLabel(a.timezone||'Asia/Shanghai')}</div></div>`;
     $('summary').innerHTML= srcBadge + `
       <div class="b"><div class="k">触发时间</div><div class="v ok">${a.date} ${a.time}</div></div>
       <div class="b"><div class="k">时间戳</div><div class="v">${a.timestamp}</div></div>
       <div class="b"><div class="k">重复</div><div class="v">${recLabel(a.recurrence)}</div></div>
+      ${tzBadge}
       ${leadBadge}
       ${endBadge}
       <div class="b"><div class="k">备注</div><div class="v">${a.label}</div></div>`;
@@ -287,11 +323,12 @@ function renderList(){
     div.className='item'+(a.enabled?'':' off');
     const leadTxt=(a.lead_minutes>0)?` · 提前${a.lead_minutes}分`:'';
     const endTxt=endLabelShort(a);
+    const tzTxt = a.timezone ? ` · ${tzShort(a.timezone)}` : '';
     div.innerHTML=`
       <div class="t">${a.time}</div>
       <div class="meta">
         <div class="lab">${a.label}</div>
-        <div class="sub">${recLabel(a.recurrence)} · 下次：${a.enabled?fmtNext(nt):'已停用'}${leadTxt}${endTxt} <span class="pill rec">#${a.timestamp}</span></div>
+        <div class="sub">${recLabel(a.recurrence)}${tzTxt} · 下次：${a.enabled?fmtNext(nt):'已停用'}${leadTxt}${endTxt} <span class="pill rec">#${a.timestamp}</span></div>
       </div>
       <div class="sw ${a.enabled?'on':''}" data-id="${a.id}"></div>
       <button class="edit" data-id="${a.id}">编辑</button>
@@ -442,12 +479,14 @@ async function doParse(){
     const text=$('input').value.trim();
     if(!text) return;
     // 多轮澄清：上一轮已理解部分锚点(下周一)则只补缺失字段（结构化合并，避免盲目拼接丢上下文）
-    const opts = pendingContext ? { context: pendingContext } : undefined;
+    const tz = getUserTz();
+    const opts = { tz };
+    if (pendingContext) opts.context = pendingContext;
     let r=parseAlarm(text, opts); currentSource='rule';
     // 仅对「新建」类缺时间的句子尝试服务端 LLM 兜底；意图类（如修改目标不明）不误调
     if(!r.success && (!r.intent || r.intent==='create')){
       try{
-        const body={text};
+        const body={text, timezone: tz};
         if(pendingContext) body.context=pendingContext;
         const resp=await fetch('/api/parse',{method:'POST',headers:appHeaders(),body:JSON.stringify(body)});
         if(resp.ok){ const sj=await resp.json(); if(sj&&(sj.alarm||sj.partial)){ r=sj; currentSource=sj.source||'llm'; } }
@@ -565,7 +604,7 @@ async function enablePush(){
 async function syncAlarmToServer(action,item){
   if(!pushActive||!clientId) return;
   try{
-    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0,end:item.end||null,fired_count:item.fired_count||0})}); }
+    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0,end:item.end||null,fired_count:item.fired_count||0,timezone:item.timezone||getUserTz()})}); }
     else if(action==='remove'){ await fetch('/api/alarm/remove',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id})}); }
   }catch(e){ /* 离线：本地仍兜底调度 */ }
 }
@@ -578,6 +617,27 @@ $('clear').onclick=()=>{ $('input').value=''; currentParsed=null; pendingRaw=nul
 $('pendingCancel').onclick=()=>{ pendingRaw=null; pendingOrigin=null; pendingContext=null; setPendingUI(false); currentParsed=null; renderPreview(); };
 $('save').onclick=saveAlarm;
 document.querySelectorAll('#examples span').forEach(s=>s.onclick=()=>{ $('input').value=s.textContent; doParse(); });
+
+// ---- 时区偏好面板（P1-1）：搜索覆盖 + 恢复自动 ----
+function fillTzOptions(filter){
+  const sel=$('tzSelect'); if(!sel) return;
+  const all=allTimezones()||['Asia/Shanghai','Asia/Tokyo','America/New_York','America/Los_Angeles','Europe/London','Europe/Paris','Europe/Berlin','Australia/Sydney'];
+  const f=(filter||'').trim().toLowerCase();
+  const list = (f ? all.filter(z=>z.toLowerCase().includes(f)) : all).slice(0,200);
+  sel.innerHTML = list.map(z=>`<option value="${z}">${tzShort(z)} · ${z}</option>`).join('');
+}
+function refreshTzUI(){
+  if(!$('tzText')) return;
+  const ov = localStorage.getItem('alarm_agent_tz');
+  if (ov && ov.trim()!=='') { $('tzText').textContent = '手动：' + tzLabel(ov); }
+  else { $('tzText').textContent = '自动：' + tzLabel(getUserTz()); }
+}
+if ($('tzSearch')) {
+  $('tzSearch').addEventListener('input', e=>fillTzOptions(e.target.value));
+  $('tzReset').onclick=()=>{ localStorage.removeItem('alarm_agent_tz'); toast('已恢复自动检测时区'); refreshTzUI(); fillTzOptions($('tzSearch').value); };
+  $('tzSelect').onchange=()=>{ const v=$('tzSelect').value; localStorage.setItem('alarm_agent_tz', v); toast('已设置时区：'+tzLabel(v)); refreshTzUI(); };
+  fillTzOptions(''); refreshTzUI();
+}
 
 load(); renderList(); refreshPerm(); doParse();
 </script>

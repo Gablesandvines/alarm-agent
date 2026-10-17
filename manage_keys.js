@@ -3,7 +3,7 @@
 /*
  * manage_keys.js — 闹钟 Agent 开放 API 密钥管理（自托管阶段）
  * 用法：
- *   node manage_keys.js create --label "我的应用" --rate 100 --plan pro
+ *   node manage_keys.js create --label "我的应用" --rate 100 --plan pro --default-timezone Asia/Shanghai
  *   node manage_keys.js list
  *   node manage_keys.js disable <key>
  *   node manage_keys.js enable  <key>
@@ -20,10 +20,12 @@ if (cmd === 'create') {
   const rate = rateIdx >= 0 ? parseInt(rest[rateIdx + 1], 10) : undefined;
   const planIdx = rest.indexOf('--plan');
   const plan = planIdx >= 0 ? rest[planIdx + 1] : 'free';
-  const rec = db.createKey({ tenant: 'custom', label, rate_limit: rate, plan });
+  const tzIdx = rest.indexOf('--default-timezone');
+  const defaultTimezone = tzIdx >= 0 ? rest[tzIdx + 1] : null;
+  const rec = db.createKey({ tenant: 'custom', label, rate_limit: rate, plan, default_timezone: defaultTimezone });
   console.log('已创建 API Key：');
   console.log('  ' + rec.key);
-  console.log('  label=' + rec.label + '  plan=' + rec.plan + '  rate_limit=' + rec.rate_limit + '/min');
+  console.log('  label=' + rec.label + '  plan=' + rec.plan + '  rate_limit=' + rec.rate_limit + '/min' + '  default_timezone=' + (rec.default_timezone || 'Asia/Shanghai(默认)'));
   console.log('调用示例：');
   console.log('  curl -X POST http://localhost:8080/v1/parse \\');
   console.log('    -H "Authorization: Bearer ' + rec.key + '" \\');
@@ -45,7 +47,7 @@ if (cmd === 'create') {
 } else {
   console.log('闹钟 Agent 密钥管理');
   console.log('用法：');
-  console.log('  node manage_keys.js create --label "我的应用" --rate 100 --plan pro   生成新密钥');
+  console.log('  node manage_keys.js create --label "我的应用" --rate 100 --plan pro --default-timezone Asia/Shanghai   生成新密钥');
   console.log('  node manage_keys.js list                                       列出全部密钥');
   console.log('  node manage_keys.js disable <key>                              禁用密钥');
   console.log('  node manage_keys.js enable  <key>                             启用密钥');

@@ -10,10 +10,46 @@ const TIME_RE = /^\d{2}:\d{2}$/;
 let pass = 0, fail = 0;
 const failures = [];
 
+function pad(n) { return String(n).padStart(2, '0'); }
+
+// 独立（不依赖 scheduler.js）计算某 IANA 时区在给定毫秒时刻的 UTC 偏移（分钟），用于校验 datetime 偏移一致性
+function tzOffsetMinutes(tz, ms) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+  const p = dtf.formatToParts(new Date(ms)).reduce((acc, x) => { acc[x.type] = x.value; return acc; }, {});
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return Math.round((asUTC - ms) / 60000);
+}
+
 function check(c) {
-  const r = parseAlarm(c.input, c.context ? { context: c.context } : undefined);
+  const opts = {};
+  if (c.context) opts.context = c.context;
+  if (c.tz) opts.tz = c.tz;
+  const r = parseAlarm(c.input, Object.keys(opts).length ? opts : undefined);
   const e = c.expect;
   const errs = [];
+
+  // 时区真正可用化：timezone 字段应等于请求透传的 IANA 名，且 datetime 偏移与 IANA 一致
+  if (e.timezone !== undefined) {
+    if (r.success && r.alarm) {
+      const a = r.alarm;
+      if (a.timezone !== e.timezone)
+        errs.push(`timezone 期望 "${e.timezone}" 实得 "${a.timezone}"`);
+      const m = (a.datetime || '').match(/([+-]\d{2}:\d{2})$/);
+      if (!m) {
+        errs.push(`datetime 缺少时区偏移："${a.datetime}"`);
+      } else {
+        const offMin = tzOffsetMinutes(e.timezone, a.timestamp * 1000);
+        const sign = offMin >= 0 ? '+' : '-';
+        const expOff = sign + pad(Math.floor(Math.abs(offMin) / 60)) + ':' + pad(Math.abs(offMin) % 60);
+        if (m[1] !== expOff)
+          errs.push(`datetime 偏移 ${m[1]} 与 ${e.timezone} 实际偏移 ${expOff} 不符`);
+      }
+    }
+  }
 
   if (e.success !== undefined && r.success !== e.success)
     errs.push(`success 期望 ${e.success} 实得 ${r.success}`);

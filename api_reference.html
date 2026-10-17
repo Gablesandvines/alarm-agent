@@ -41,7 +41,7 @@
   <p class="lead">把「自然语言」解析成「结构化闹钟时间」，并可托管、管理多租户闹钟。规则引擎优先（零成本），长尾由 LLM 兜底。</p>
   <p>
     <span class="tag">Base URL</span> <code>https://your-domain.example.com</code>（本地：<code>http://localhost:8080</code>）<br>
-    <span class="tag">协议版本</span> <code>v1</code> · <code>1.0.0</code> &nbsp;
+    <span class="tag">协议版本</span> <code>v1</code> · <code>1.5.0</code> &nbsp;
     <span class="tag">鉴权</span> <code>Authorization: Bearer &lt;API_KEY&gt;</code>
   </p>
 
@@ -57,7 +57,7 @@
     <li><b>限流：</b>按 Key 的 60 秒滑动窗口，默认 60 次/分（每 Key 可覆盖）。超额→<code>429 rate_limited</code>，带 <code>Retry-After</code> 头。</li>
     <li><b>统一错误体：</b><code>{ "error": { "code": "...", "message": "..." }, "request_id": "req_..." }</code></li>
     <li><b>HTTP 200 ≠ 解析成功：</b>模糊输入返回 <code>200</code> 但 <code>success:false</code> + <code>clarification</code>，由调用方决定是否追问。</li>
-    <li><b>时区：</b>固定 <code>Asia/Shanghai</code>（UTC+8，无夏令时），除非显式覆盖。</li>
+    <li><b>时区：</b>解析与触发时区脱离部署机时区，以调用方传入时区为准。所有 <code>/v1/*</code> 接口支持 <code>timezone</code>（IANA 名，如 <code>America/New_York</code>）。回退链：<code>请求 timezone</code> → <code>租户 default_timezone</code> → 环境变量 <code>ALARM_DEFAULT_TZ_&lt;tenant&gt;</code> → <code>Asia/Shanghai</code>。非法 IANA 名（如 <code>Foo/Bar</code>）返回 <span class="bad">400</span> <code>invalid_timezone</code>；缺失则按上述回退，最终兜底 Asia/Shanghai（UTC+8，无夏令时）。</li>
   </ul>
 
   <h2>1. 健康检查（免鉴权）</h2>
@@ -65,7 +65,7 @@
     <span class="method m-get">GET</span><span class="path">/v1/health</span>
     <pre>curl https://your-domain.example.com/v1/health</pre>
     <div class="lbl">响应 200</div>
-    <pre>{ "status": "ok", "version": "1.0.0", "request_id": "req_01HX..." }</pre>
+    <pre>{ "status": "ok", "version": "1.5.0", "request_id": "req_01HX..." }</pre>
   </div>
 
   <h2>2. 解析自然语言 → 闹钟时间</h2>
@@ -269,13 +269,15 @@ function verify(rawBody, signatureHeader, apiKey){
     <span class="method m-get">GET</span><span class="path">/v1/keys</span>
     <span class="method m-post">POST</span><span class="path">/v1/keys</span>
     <span class="method m-post">POST</span><span class="path">/v1/keys/:key/disable|enable</span>
-    <div class="lbl">创建专业版密钥</div>
+    <div class="lbl">创建专业版密钥（可带默认时区）</div>
     <pre>curl -X POST https://your-domain.example.com/v1/keys \
   -H "Authorization: Bearer &lt;KEY&gt;" -H "Content-Type: application/json" \
-  -d '{"label":"生产环境","plan":"pro"}'
+  -d '{"label":"生产环境","plan":"pro","default_timezone":"America/New_York"}'
 # → 201：返回完整 key（仅此刻返回一次，请保存）
 #   {"key":"sk_live_...","tenant":"demo","label":"生产环境",
-#    "enabled":true,"rate_limit":600,"plan":"pro","created_at":"...","request_id":"..."}</pre>
+#    "enabled":true,"rate_limit":600,"plan":"pro",
+#    "default_timezone":"America/New_York","created_at":"...","request_id":"..."}
+# 该租户后续解析/创建闹钟若未显式带 timezone，即按 default_timezone 解析</pre>
     <div class="lbl">列出本租户密钥（Key 已脱敏）</div>
     <pre>curl https://your-domain.example.com/v1/keys -H "Authorization: Bearer &lt;KEY&gt;"
 # → {"count":2,"keys":[{"key":"sk_live_abc1…2345","tenant":"demo",
@@ -303,6 +305,7 @@ function verify(rawBody, signatureHeader, apiKey){
   <table>
     <tr><th>HTTP</th><th>code</th><th>含义</th></tr>
     <tr><td>400</td><td>bad_request</td><td>参数错误（缺 text / 超 200 字 / 闹钟缺时间字段 / webhook_url 非法或协议不符）</td></tr>
+    <tr><td>400</td><td>invalid_timezone</td><td>timezone 不是合法的 IANA 时区名（如 Foo/Bar）。解析/创建/更新闹钟均会校验，调用方应改用规范 IANA 名（如 America/New_York）</td></tr>
     <tr><td>401</td><td>missing_api_key / invalid_api_key</td><td>缺头或 Key 无效</td></tr>
     <tr><td>403</td><td>key_disabled</td><td>Key 已禁用</td></tr>
     <tr><td>402</td><td>quota_exceeded</td><td>本月解析配额（按套餐）已用尽，需升级或等下个计费周期</td></tr>
@@ -320,7 +323,7 @@ function verify(rawBody, signatureHeader, apiKey){
     <code>npx @redocly/cli serve openapi.yaml</code> 即可生成可调试的交互式 API 文档与 SDK。
   </div>
 
-  <p class="lead" style="margin-top:40px">本参考覆盖 v1.0.0 全部对外开放接口：<b>解析（/v1/parse）、健康检查（/v1/health）、密钥自助管理（/v1/keys）、托管闹钟 CRUD（/v1/alarms）、Webhook 配置与用量（/v1/webhook、/v1/usage）</b>，并附开发者门户 <code>/portal</code>。闹钟到点后通过 Webhook 投递 <code>alarm.fired</code> 事件，无需你自建存储即可接入"定时触发业务"。</p>
+  <p class="lead" style="margin-top:40px">本参考覆盖 v1.5.0 全部对外开放接口：<b>解析（/v1/parse）、健康检查（/v1/health）、密钥自助管理（/v1/keys）、托管闹钟 CRUD（/v1/alarms）、Webhook 配置与用量（/v1/webhook、/v1/usage）</b>，并附开发者门户 <code>/portal</code>。闹钟到点后通过 Webhook 投递 <code>alarm.fired</code> 事件，无需你自建存储即可接入"定时触发业务"。</p>
 
 </div>
 </body>

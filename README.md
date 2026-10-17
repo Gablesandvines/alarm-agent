@@ -11,6 +11,7 @@
 - **自然语言解析**：中文口语 → 结构化闹钟 JSON（规则引擎优先，可选 LLM 长尾兜底）。
 - **托管闹钟**：服务端到点自动触发，无需你自己跑定时器。
 - **时区与夏令时安全**：重复闹钟（每天 / 工作日 / 周末 / 每周 X / 每 N 天 / 双周 X / 每月 N 号）按闹钟时区计算下次触发，跨夏令时切换日墙钟时间不漂移。
+- **时区真正可用化（解析触发脱离部署机时区）**：解析与触发不再绑死部署服务器的系统时区。调用方可显式传 `timezone`（IANA 名，如 `America/New_York`）；缺省时按 `请求 timezone → 租户 default_timezone → 环境变量 ALARM_DEFAULT_TZ_<tenant> → Asia/Shanghai` 回退。非法 IANA 名返回 `400 invalid_timezone`。同一句「明天 8 点」在纽约与上海会得到各自正确的墙钟与 UTC 时间戳。
 - **中国法定节假日感知**：`工作日` 闹钟自动跳过元旦 / 春节 / 清明 / 劳动 / 端午 / 中秋 / 国庆等法定假期，并包含调休补班周末（数据随国务院办公厅每年放假通知更新，见 `scheduler.js` 的 `HOLIDAYS`）。
 - **提前提醒（lead_minutes）**：单次与重复闹钟均支持「提前 N 分钟」触发——服务端重排已修正此前重复闹钟提前提醒失效的问题。
 - **重复终止条件**：重复闹钟支持三种结束方式——「到某天为止」（含当天仍可触发）、「持续 N 天」、「共 N 次」。仅对重复闹钟生效，单次闹钟自动忽略；结束日期不污染闹钟自身锚点。解析结果落到 `alarm.end`（`{type:'date',date}` / `{type:'days',days}` / `{type:'count',count}`），前端与开放 API 均已打通（显示/编辑/持久化/到点终止）。
@@ -84,6 +85,7 @@ docker compose exec app node manage_keys.js create --label prod --plan enterpris
 > - `ALARM_APP_KEY=<强随机串>` —— 启用 `/api/*` 接口鉴权（防绕过平台配额白嫖参考 App 接口）。
 > - `ALARM_CORS_ORIGINS=https://你的前端域名` —— 收窄 CORS 可信来源。
 > - `ALARM_MAX_BODY_BYTES=65536` —— 请求体上限（默认 64KB，已足够）。
+> - `ALARM_DEFAULT_TZ_<tenant>` —— 为指定租户设置**服务端级默认时区**（IANA 名，如 `ALARM_DEFAULT_TZ_demo=America/New_York`）。当请求未带 `timezone` 且该租户密钥也未设 `default_timezone` 时生效，优先级高于全局兜底 `Asia/Shanghai`。常用于多租户部署中按地区预置默认时区。
 
 ---
 
@@ -184,7 +186,7 @@ curl http://localhost:8080/v1/usage -H "Authorization: Bearer <你的KEY>"
 | `pro` | 600 次/分钟 | 100,000 |
 | `enterprise` | 6,000 次/分钟 | 不限 |
 
-- 创建密钥：`node manage_keys.js create --label dev --plan pro`（或门户内创建）。
+- 创建密钥：`node manage_keys.js create --label dev --plan pro --default-timezone America/New_York`（或门户内创建；`--default-timezone` 可省略，默认 `Asia/Shanghai`）。
 - 原始 Key 仅在创建时返回一次，之后无法再查询明文。
 - 计费为**软计费**（套餐配额/限速），当前版本未接入真实支付。
 
@@ -239,7 +241,7 @@ alarm_agent/
 ├── manage_keys.js       # 密钥管理 CLI
 ├── portal.html          # 开发者门户（/portal）
 ├── index.html / sw.js   # 参考 App（Web Push）
-├── openapi.yaml         # OpenAPI 3 契约（v1.0.0）
+├── openapi.yaml         # OpenAPI 3 契约（v1.5.0）
 ├── api_reference.html   # 人读 API 参考
 ├── LICENSE              # MIT License
 ├── tests/               # 解析引擎回归 + 调度/时区回归

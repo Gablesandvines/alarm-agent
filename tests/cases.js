@@ -126,4 +126,11 @@ module.exports = [
   { input: '工作日早上8点吃药，响5次就停', expect: { success: true, time: '08:00', recurrence: 'weekdays', endType: 'count', endCount: 5, labelIncludes: ['吃药'] } },
   // 单次闹钟忽略结束条件（无重复则 end 不挂载）
   { input: '明天8点开会，共5次', expect: { success: true, time: '08:00', recurrence: 'none', endNull: true, future: true } },
+
+  // —— 时区真正可用化（P0/P1）：tz 透传 + 墙钟不漂移 ——
+  // 同一句"明天早上8点"，在纽约与上海都应得到 08:00 墙钟，且 timezone 字段正确、datetime 偏移符合 IANA
+  { input: '明天早上8点叫我起床', tz: 'America/New_York', expect: { success: true, time: '08:00', timezone: 'America/New_York', recurrence: 'none', labelIncludes: ['起床'] } },
+  { input: '明天早上8点叫我起床', tz: 'Asia/Shanghai', expect: { success: true, time: '08:00', timezone: 'Asia/Shanghai', recurrence: 'none', labelIncludes: ['起床'] } },
+  { input: '每周三下午3点健身', tz: 'Europe/London', expect: { success: true, time: '15:00', timezone: 'Europe/London', recurrence: 'weekly:3', labelIncludes: ['健身'] } },
+  { input: '30分钟后提醒我开会', tz: 'America/Los_Angeles', expect: { success: true, relSeconds: 30 * 60, timezone: 'America/Los_Angeles', labelIncludes: ['开会'] } },
 ];
