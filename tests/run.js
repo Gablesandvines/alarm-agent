@@ -136,7 +136,9 @@ function check(c) {
     if (e.future && a.timestamp <= Math.floor(Date.now() / 1000))
       errs.push(`date 应晚于当前时间（实得 ${a.date} ${a.time}）`);
     if (e.dow !== undefined) {
-      const wd = new Date(a.timestamp * 1000).getDay();
+      // 用闹钟自身时区的日历日计算星期（tz 无关）：避免 CI(UTC) 下 new Date(ts).getDay() 的墙钟漂移
+      const [Y, M, D] = a.date.split('-').map(Number);
+      const wd = new Date(Date.UTC(Y, M - 1, D)).getUTCDay();
       if (wd !== e.dow) errs.push(`星期 期望 ${e.dow}(0=日..6=六) 实得 ${wd}（${a.date}）`);
     }
     if (e.lead !== undefined && a.lead_minutes !== e.lead)
@@ -167,14 +169,16 @@ function check(c) {
       let y = t.getFullYear();
       let cand = new Date(y, em - 1, ed);
       if (cand < new Date(y, t.getMonth(), t.getDate())) { y += 1; cand = new Date(y, em - 1, ed); }
-      const got = new Date(a.timestamp * 1000);
-      if (got.getFullYear() !== cand.getFullYear() || got.getMonth() + 1 !== em || got.getDate() !== ed)
+      const [gY, gM, gD] = a.date.split('-').map(Number); // 用闹钟自身时区日历日，tz 无关
+      if (gY !== cand.getFullYear() || gM !== em || gD !== ed)
         errs.push(`日期 期望最近 ${em}/${ed}（实得 ${a.date}）`);
     }
     if (e.nextWeek) {
-      const monOf = dt => { const x = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()); x.setDate(x.getDate() - (x.getDay() + 6) % 7); return x.getTime(); };
-      const resMon = monOf(new Date(a.timestamp * 1000));
-      const todayMon = monOf(new Date());
+      const monOf = (Y, M, D) => { const x = new Date(Date.UTC(Y, M - 1, D)); x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); return x.getTime(); };
+      const [rY, rM, rD] = a.date.split('-').map(Number); // 结果日期用闹钟自身时区，tz 无关
+      const resMon = monOf(rY, rM, rD);
+      const t = new Date();
+      const todayMon = monOf(t.getFullYear(), t.getMonth() + 1, t.getDate());
       if (resMon <= todayMon) errs.push(`date 应属于"下一周"（实得 ${a.date}，本周一=${new Date(todayMon).toISOString().slice(0, 10)}）`);
     }
   }
