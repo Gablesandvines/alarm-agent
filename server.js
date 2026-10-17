@@ -571,10 +571,15 @@ async function handleApi(req, res) {
     if (url === '/api/register' && req.method === 'POST') {
       const body = await readBody(req);
       if (!body.subscription) return appError(res, 'bad_request', 'missing subscription', 400);
-      const id = 'c' + Date.now() + Math.random().toString(36).slice(2, 7);
-      db.addSub(id, body.subscription);
-      console.log('[register] 新订阅', id);
-      return sendJSON(res, { clientId: id });
+      const { id, reused } = db.addSub(body.subscription);
+      console.log(reused ? '[register] 复用订阅 ' + id : '[register] 新订阅 ' + id);
+      return sendJSON(res, { clientId: id, reused: !!reused });
+    }
+    // 前端自愈校验：服务端是否仍承认该 clientId 的订阅（重建/清库后旧 clientId 失效，前端据此换新）
+    if (url === '/api/sub/check' && req.method === 'GET') {
+      const cid = new URL(req.url, 'http://localhost').searchParams.get('clientId') || '';
+      const ok = !!cid && db.listSubs().some(x => x.id === cid);
+      return sendJSON(res, { ok: !!ok });
     }
     if (url === '/api/alarm' && req.method === 'POST') {
       const body = await readBody(req);
@@ -668,6 +673,9 @@ setInterval(() => {
           db.deleteSub(a.clientId);
         }
       });
+    } else {
+      // 无订阅（如服务端重建后 subs 为空、客户端尚未重注册）：不静默跳过，记警告便于排查；本地通知兜底
+      console.warn('[push] 闹钟', a.id, '无可用订阅（clientId=' + a.clientId + '），跳过云端推送（仅本地兜底）');
     }
     if (a.recurrence === 'none') a.fired = true;
     else {

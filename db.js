@@ -291,9 +291,22 @@ function bumpUsage(key, field) {
 function listSubs() {
   return db.prepare('SELECT * FROM subs').all().map(r => ({ id: r.id, subscription: JSON.parse(r.subscription_json) }));
 }
-function addSub(id, sub) {
-  db.prepare('INSERT OR REPLACE INTO subs (id, subscription_json, created_at) VALUES (?,?,?)')
+// addSub（幂等）：相同订阅（同 endpoint）重复注册 → 返回既有 id，避免重建/重开浏览器后订阅行堆积。
+// 签名由 (id, sub) 收敛为 (sub)（订阅主键 endpoint 即身份，行 id 由服务端生成），返回 { id, reused }。
+function addSub(sub) {
+  let s = sub;
+  if (typeof sub === 'string') { try { s = JSON.parse(sub); } catch (e) { s = null; } }
+  const endpoint = s && s.endpoint;
+  if (endpoint) {
+    const dup = db.prepare('SELECT * FROM subs').all().find(r => {
+      try { return JSON.parse(r.subscription_json).endpoint === endpoint; } catch (e) { return false; }
+    });
+    if (dup) return { id: dup.id, reused: true };
+  }
+  const id = 'c' + Date.now() + Math.random().toString(36).slice(2, 7);
+  db.prepare('INSERT INTO subs (id, subscription_json, created_at) VALUES (?,?,?)')
     .run(id, JSON.stringify(sub), new Date().toISOString());
+  return { id, reused: false };
 }
 function deleteSub(id) { db.prepare('DELETE FROM subs WHERE id = ?').run(id); }
 function listLegacyAlarms() {

@@ -540,7 +540,9 @@ function playRing(){
   }
 }
 function notify(a){
-  if(pushActive) return; // 已启用云端推送时，由 Service Worker 负责系统通知，避免重复
+  // 仅当该闹钟已确认同步到服务端（云端通道可靠）时才把系统通知让位给 Service Worker，避免重复；
+  // 未同步（离线创建/服务端无订阅）时本地必须兜底，否则云端不至、本地也让位 → 完全无通知
+  if(pushActive && syncedIds.has(a.id)) return;
   if('Notification' in window && Notification.permission==='granted'){
     try{ new Notification('⏰ 闹钟',{body:(a.label||'时间到')+'  ·  '+a.time, tag:a.id}); }catch(e){}
   }
@@ -575,38 +577,95 @@ let swReg=null, clientId=localStorage.getItem('alarm_agent_cid')||null, pushActi
 function setPushStatus(t){ const el=$('pushText'); if(el) el.textContent=t; el&&(el.style.color = pushActive?'var(--good)':(t==='未开启'?'var(--warn)':'var(--sub)')); }
 function urlBase64ToUint8(b64){ const s=atob(b64.replace(/-/g,'+').replace(/_/g,'/')); const u=new Uint8Array(s.length); for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i); return u; }
 
+// 浏览器订阅绑定的 VAPID 公钥是否与当前服务端一致（服务端重建/换密钥后必须换新订阅，否则发送被推送服务拒绝）
+function subKeyMatches(sub, b64Public){
+  try{
+    const cur = sub && sub.options && sub.options.applicationServerKey;
+    if(!cur) return false; // 读不到绑定密钥 → 按不匹配处理，强制换新（安全方向）
+    const want = urlBase64ToUint8(b64Public);
+    if(cur.length !== want.length) return false;
+    for(let i=0;i<cur.length;i++) if(cur[i]!==want[i]) return false;
+    return true;
+  }catch(e){ return false; }
+}
+async function fetchVapidPublic(){
+  if(vapidPublic) return vapidPublic;
+  const r = await fetch('/api/vapid');
+  if(!r.ok) throw new Error('服务端不可达');
+  vapidPublic = (await r.json()).publicKey;
+  return vapidPublic;
+}
+// 建立/恢复云端推送：旧订阅与当前 VAPID 密钥不匹配时自动换新；注册对相同订阅幂等
+async function healPushRegistration(){
+  try{
+    if(!swReg){ swReg=await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready; }
+    const pub = await fetchVapidPublic();
+    let sub = await swReg.pushManager.getSubscription();
+    if(sub && !subKeyMatches(sub, pub)){ await sub.unsubscribe(); sub = null; }
+    if(!sub) sub = await swReg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: urlBase64ToUint8(pub) });
+    const reg = await fetch('/api/register', { method:'POST', headers: appHeaders(), body: JSON.stringify({ subscription: sub.toJSON() }) });
+    const rj = await reg.json();
+    clientId = rj.clientId; localStorage.setItem('alarm_agent_cid', clientId);
+    pushActive = true; setPushStatus('已开启（关浏览器也响）');
+    return true;
+  }catch(e){ console.error(e); pushActive = false; setPushStatus('未开启'); return false; }
+}
 async function initPush(){
   if(!('serviceWorker' in navigator) || !('PushManager' in window)){ setPushStatus('浏览器不支持'); return; }
   try{
     swReg=await navigator.serviceWorker.register('sw.js');
     await navigator.serviceWorker.ready;
     const existing=await swReg.pushManager.getSubscription();
-    if(existing && clientId){ pushActive=true; setPushStatus('已开启（关浏览器也响）'); }
-    else setPushStatus('未开启');
+    if(!existing){ pushActive=false; setPushStatus('未开启'); return; }
+    // 曾开启过：不能只信本地状态——需向服务端校验 clientId 是否仍被承认（防服务端重建/清库假阳性），
+    // 并确认浏览器订阅绑定的 VAPID 公钥与当前服务端一致（防换密钥后发送被拒）
+    let serverOk=false;
+    try{
+      if(clientId){
+        const r=await fetch('/api/sub/check?clientId='+encodeURIComponent(clientId));
+        serverOk=!!(await r.json()).ok;
+      }
+    }catch(e){}
+    let keyOk=false;
+    try{ keyOk=subKeyMatches(existing, await fetchVapidPublic()); }catch(e){}
+    if(serverOk && keyOk){ pushActive=true; setPushStatus('已开启（关浏览器也响）'); return; }
+    // 服务端不承认或密钥已更换 → 自动换新订阅并重新注册（用户早已授权，无需再弹权限窗）；
+    // 仅在自愈成功时全量补同步（说明服务端丢过状态）；校验通过的健康路径不重推，避免重置服务端 fired_count
+    const healed=await healPushRegistration();
+    if(healed){ toast('云端推送已自动恢复 ✓'); resyncAllToServer(); }
+    else setPushStatus('未开启（服务端不可达，点按钮重试）');
   }catch(e){ setPushStatus('需本地服务端'); }
 }
 async function enablePush(){
   try{
-    if(!swReg) swReg=await navigator.serviceWorker.register('sw.js');
-    await navigator.serviceWorker.ready;
+    if(!swReg){ swReg=await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready; }
     const perm=await Notification.requestPermission();
     if(perm!=='granted'){ toast('需授权通知才能开启云端推送'); setPushStatus('未授权'); return; }
-    let sub=await swReg.pushManager.getSubscription();
-    if(!sub){
-      if(!vapidPublic){ const r=await fetch('/api/vapid'); if(!r.ok) throw new Error('服务端不可达'); vapidPublic=(await r.json()).publicKey; }
-      sub=await swReg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:urlBase64ToUint8(vapidPublic)});
-    }
-    const reg=await fetch('/api/register',{method:'POST',headers:appHeaders(),body:JSON.stringify({subscription:sub.toJSON()})});
-    const rj=await reg.json(); clientId=rj.clientId; localStorage.setItem('alarm_agent_cid',clientId);
-    pushActive=true; setPushStatus('已开启（关浏览器也响）'); toast('云端推送已开启 ✓');
+    const ok=await healPushRegistration();
+    if(ok){ resyncAllToServer(); toast('云端推送已开启 ✓'); }
+    else toast('开启失败：请确认本地服务端已启动');
   }catch(e){ console.error(e); toast('开启失败：'+(e.message||e)); setPushStatus('开启失败'); }
 }
-async function syncAlarmToServer(action,item){
+const syncedIds = new Set(); // 已确认同步到服务端的闹钟 id（内存态；页面刷新后不持久化）
+// 服务端状态丢失后自愈成功时调用：把本地启用中的闹钟补注册回服务端（离线期间创建的也能补上）
+function resyncAllToServer(){
   if(!pushActive||!clientId) return;
+  let n=0;
+  alarms.forEach(a=>{ if(a.enabled){ syncAlarmToServer('add',a); n++; } });
+  if(n) console.log('[push] 重连后补同步', n, '条闹钟');
+}
+async function syncAlarmToServer(action,item){
+  if(!pushActive||!clientId){ syncedIds.delete(item.id); return; }
   try{
-    if(action==='add'){ await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0,end:item.end||null,fired_count:item.fired_count||0,timezone:item.timezone||getUserTz()})}); }
-    else if(action==='remove'){ await fetch('/api/alarm/remove',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id})}); }
-  }catch(e){ /* 离线：本地仍兜底调度 */ }
+    if(action==='add'){
+      await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0,end:item.end||null,fired_count:item.fired_count||0,timezone:item.timezone||getUserTz()})});
+      syncedIds.add(item.id);
+    }
+    else if(action==='remove'){
+      await fetch('/api/alarm/remove',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id})});
+      syncedIds.delete(item.id);
+    }
+  }catch(e){ syncedIds.delete(item.id); /* 离线：本地仍兜底调度 */ }
 }
 
 if('serviceWorker' in navigator){ window.addEventListener('load',initPush); }

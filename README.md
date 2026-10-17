@@ -108,6 +108,8 @@ docker compose exec app node manage_keys.js create --label prod --plan enterpris
 
 > 另有一组 `/api/*`（参考 App 用：浏览器 Web Push 订阅与闹钟），与开放平台隔离。
 
+> **服务端重建 / 更换 VAPID 密钥后的自愈**：页面加载时会自动检测（校验服务端是否仍承认本地 clientId 的订阅 + 比对浏览器订阅绑定的 VAPID 公钥），不一致时自动换新订阅并重新注册，随后全量补同步本地闹钟，无需手动清理 Service Worker。
+
 ### 解析示例
 
 ```bash
