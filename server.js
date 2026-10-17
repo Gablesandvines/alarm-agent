@@ -299,13 +299,20 @@ async function handleOpenApi(req, res) {
   if (!url.startsWith('/v1/')) return standardError(res, 'not_found', '接口不存在', 404, reqId);
 
   // 鉴权：Authorization: Bearer <API_KEY>
+  // 单用户模式（默认）：未携带 key 时使用内置单用户密钥，免登录调用；
+  // 平台模式（ALARM_PLATFORM=1）：必须携带有效 key，否则 401。
   const auth = req.headers['authorization'] || '';
   const m = auth.match(/^Bearer\s+(.+)$/i);
-  if (!m) return standardError(res, 'missing_api_key', '缺少 Authorization: Bearer <API_KEY> 头', 401, reqId);
-  const provided = m[1].trim();
-  const k = db.getKey(provided);
-  if (!k) return standardError(res, 'invalid_api_key', 'API Key 无效或已禁用', 401, reqId);
-  if (k.enabled === false) return standardError(res, 'key_disabled', '该 API Key 已被禁用', 403, reqId);
+  let k;
+  if (m) {
+    k = db.getKey(m[1].trim());
+    if (!k) return standardError(res, 'invalid_api_key', 'API Key 无效或已禁用', 401, reqId);
+    if (k.enabled === false) return standardError(res, 'key_disabled', '该 API Key 已被禁用', 403, reqId);
+  } else if (db.PLATFORM_MODE) {
+    return standardError(res, 'missing_api_key', '缺少 Authorization: Bearer <API_KEY> 头', 401, reqId);
+  } else {
+    k = db.getKey(db.SINGLE_USER_KEY) || db.ensureSingleUserKey();
+  }
 
   // 限流（按 key 滑动窗口；持久化到 SQLite，重启不丢、同库多实例可共享）
   const limit = (typeof k.rate_limit === 'number' && k.rate_limit > 0) ? k.rate_limit : 60;
@@ -495,6 +502,8 @@ async function handleOpenApi(req, res) {
   // ---------- 密钥自助管理（仅能管理本租户密钥） ----------
   const keysMatch = url.match(/^\/v1\/keys(?:\/([\w-]+)\/(disable|enable))?$/);
   if (keysMatch) {
+    // 单用户模式下平台能力冻结：/v1/keys 全部方法返回 404，不泄露内置密钥
+    if (!db.PLATFORM_MODE) return standardError(res, 'not_found', '接口不存在', 404, reqId);
     const sub = keysMatch[1];
     const action = keysMatch[2];
     if (sub && action && req.method === 'POST') {
@@ -696,6 +705,12 @@ setInterval(() => {
 }, 1000);
 
 const PORT = process.env.PORT || 8080;
+if (db.PLATFORM_MODE) {
+  console.log('[模式] 平台模式（ALARM_PLATFORM=1）：多租户 SaaS 能力已启用');
+} else {
+  db.ensureSingleUserKey();
+  console.log('[模式] 单用户模式（默认）：开放 API 免 Key 调用，多租户平台能力已休眠；ALARM_PLATFORM=1 可恢复平台模式');
+}
 server.listen(PORT, () => {
   console.log('闹钟 Agent 服务端已启动： http://localhost:' + PORT);
   console.log('在浏览器打开该地址并点「开启云端推送」即可体验关浏览器也能响。');

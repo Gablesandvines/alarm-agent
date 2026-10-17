@@ -60,6 +60,14 @@ const PLANS = {
 const DEFAULT_PLAN = 'free';
 const QUOTA_WINDOW_MS = 30 * 24 * 3600 * 1000; // 滚动 30 天计费周期
 
+// ---------- 运行模式：单用户（默认） / 多租户平台 ----------
+// 默认单用户模式：多租户 SaaS 平台能力（密钥自助管理、计费套餐）休眠；
+// ALARM_PLATFORM=1 时恢复平台模式。
+const PLATFORM_MODE = process.env.ALARM_PLATFORM === '1';
+// 单用户模式内置密钥（固定值）：tenant='default'，plan='single' 不在 PLANS 中 → 无月度配额；
+// rate_limit=1000000 视同不限流。
+const SINGLE_USER_KEY = 'sk_single_user';
+
 // ---------- 建表 ----------
 db.exec(`
 CREATE TABLE IF NOT EXISTS keys (
@@ -203,6 +211,17 @@ function setKeyEnabled(rawKey, enabled) {
 function setWebhook(rawKey, url, verified) {
   db.prepare('UPDATE keys SET webhook_url = ?, webhook_verified = ? WHERE key_hash = ?')
     .run(url || null, verified ? 1 : 0, hashKey(rawKey));
+}
+
+// 单用户模式内置密钥：重复调用幂等（已存在则直接返回现有记录）。
+// default_timezone 显式传 null，使 P3 时区回退链（ALARM_DEFAULT_TZ_default > Asia/Shanghai）在请求期仍然生效。
+function ensureSingleUserKey() {
+  const existing = getKey(SINGLE_USER_KEY);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO keys (key_hash, key_enc, tenant, label, enabled, rate_limit, plan, default_timezone, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(hashKey(SINGLE_USER_KEY), encryptSecret(SINGLE_USER_KEY), 'default', '单用户默认密钥', 1, 1000000, 'single', null, now);
+  return getKey(SINGLE_USER_KEY);
 }
 
 // ---------- 托管闹钟 ----------
@@ -498,14 +517,18 @@ function migrateFromJson() {
 migrateFromJson();
 
 // 若库中仍无密钥（全新部署），自动生成一枚示例密钥便于立即体验
-if (db.prepare('SELECT count(*) c FROM keys').get().c === 0) {
-  const sample = createKey({ tenant: 'demo', label: '示例密钥（自动生成）', plan: 'free' });
-  console.log('[db] 已生成示例 API Key（data/alarm.db）：', sample.key);
-  console.log('[db] 管理：node manage_keys.js create/list/disable/enable');
+// 仅平台模式生成 demo 租户示例密钥；单用户模式下不生成，由 ensureSingleUserKey 提供内置密钥
+if (PLATFORM_MODE) {
+  if (db.prepare('SELECT count(*) c FROM keys').get().c === 0) {
+    const sample = createKey({ tenant: 'demo', label: '示例密钥（自动生成）', plan: 'free' });
+    console.log('[db] 已生成示例 API Key（data/alarm.db）：', sample.key);
+    console.log('[db] 管理：node manage_keys.js create/list/disable/enable');
+  }
 }
 
 module.exports = {
   db, PLANS, DEFAULT_PLAN, QUOTA_WINDOW_MS, DELIVERY_MAX_ATTEMPTS,
+  PLATFORM_MODE, SINGLE_USER_KEY, ensureSingleUserKey,
   getKey, listKeys, listAllKeys, getEnabledKeyForTenant, createKey, setKeyEnabled, setWebhook,
   getAlarmsByTenant, getAlarm, findAlarmByIdempotency, saveAlarm, deleteAlarm, getAllAlarms,
   getUsage, bumpUsage,

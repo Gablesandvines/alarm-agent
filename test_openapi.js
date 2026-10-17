@@ -20,6 +20,7 @@ const TEST_DB_FILES = ['test.alarm.db', 'test.alarm.db-wal', 'test.alarm.db-shm'
 // 测试前清掉上一次遗留的测试库，避免脏数据
 TEST_DB_FILES.forEach(f => { const p = path.join(DATA, f); if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch (e) {} } });
 process.env.ALARM_DB = TEST_DB;
+process.env.ALARM_PLATFORM = '1'; // 平台模式：保留全部多租户/计费/密钥管理断言
 
 // 用 db.js（指向 test.alarm.db）初始化一份全新库，并注入测试密钥（多租户，用于隔离验证 + 限流验证）
 const db = require('./db.js');
