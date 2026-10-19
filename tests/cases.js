@@ -6,6 +6,9 @@
  *   - relSeconds：相对时间类（分钟后/小时后/秒后）期望的秒级偏移，容忍 ±5s
  *   - needsClarification：歧义/未识别用例
  * ============================================================ */
+// 固定基准：2025-01-21T08:00:00Z = 上海 2025-01-21 16:00（用于相对时长/节日日期的确定性断言）
+const NOW_A = Date.parse('2025-01-21T08:00:00Z');
+
 module.exports = [
   // —— 日锚点 + 时段 ——
   { input: '明天早上8点叫我起床', expect: { success: true, time: '08:00', recurrence: 'none', labelIncludes: ['起床'] } },
@@ -196,4 +199,43 @@ module.exports = [
   { input: '十二点',            expect: { success: true, time: '12:00', recurrence: 'none' } },
   { input: '二十三点睡觉',       expect: { success: true, time: '23:00', recurrence: 'none', labelIncludes: ['睡觉'] } },
   { input: '每天下午三点一刻开会', expect: { success: true, time: '15:15', recurrence: 'daily', labelIncludes: ['开会'] } },
+
+  // ============================================================
+  // 第二阶段 2a：复合相对时长 + 中午校正（评测挖出的真 bug）
+  // 基准固定为上海 2025-01-21 16:00，全部可确定性断言
+  // ============================================================
+
+  // —— 复合时长求和（此前只取最后一段：2小时18分钟 被算成 +18min）——
+  { input: '2小时18分钟以后提醒我', now: NOW_A, expect: { success: true, time: '18:18', dateFixed: '2025-01-21', recurrence: 'none' } },
+  { input: '1小时30分钟后',        now: NOW_A, expect: { success: true, time: '17:30', dateFixed: '2025-01-21', recurrence: 'none' } },
+  // 「一个半小时」= 90min（此前被算成 +30min）
+  { input: '一个半小时后叫我',      now: NOW_A, expect: { success: true, time: '17:30', recurrence: 'none' } },
+  // 「N个半小时」= N×60+30
+  { input: '两个半小时后',          now: NOW_A, expect: { success: true, time: '18:30', recurrence: 'none' } },
+  // 「再过X」无「后」也识别为时长（此前 time 为空）
+  { input: '再过十分钟叫我',        now: NOW_A, expect: { success: true, time: '16:10', recurrence: 'none' } },
+  { input: '再过10分钟叫我',        now: NOW_A, expect: { success: true, time: '16:10', recurrence: 'none' } },
+  { input: '再过5分钟',             now: NOW_A, expect: { success: true, time: '16:05', recurrence: 'none' } },
+  // 「X内」也按时长处理；半天 = 12h
+  { input: '10分钟内提醒我',        now: NOW_A, expect: { success: true, time: '16:10', recurrence: 'none' } },
+  { input: '半天后叫我',            now: NOW_A, expect: { success: true, time: '04:00', dateFixed: '2025-01-22', recurrence: 'none' } },
+
+  // —— 反例：日期增量不得被当时长 ——
+  // 「6天后3点」= 2025-01-27 03:00（此前被当成今天 03:00，且不能变成 +6 天时长）
+  { input: '6天后3点',              now: NOW_A, expect: { success: true, time: '03:00', dateFixed: '2025-01-27', recurrence: 'none' } },
+  // 无「后」的裸时长不构成时刻（也不能被当作「一点」）
+  { input: '一个半小时',            now: NOW_A, expect: { success: false, needsClarification: true } },
+  { input: '半小时',                now: NOW_A, expect: { success: false, needsClarification: true } },
+
+  // —— 中午校正：中午 1~3 点 → +12；11/12 点保持 ——
+  { input: '中午一点',   now: NOW_A, expect: { success: true, time: '13:00', recurrence: 'none' } },
+  { input: '中午两点',   now: NOW_A, expect: { success: true, time: '14:00', recurrence: 'none' } },
+  { input: '中午三点',   now: NOW_A, expect: { success: true, time: '15:00', recurrence: 'none' } },
+  { input: '中午十二点', now: NOW_A, expect: { success: true, time: '12:00', recurrence: 'none' } },
+  { input: '中午十一点', now: NOW_A, expect: { success: true, time: '11:00', recurrence: 'none' } },
+  { input: '中午12点半', now: NOW_A, expect: { success: true, time: '12:30', recurrence: 'none' } },
+  // 其它时段词语义不得被改动
+  { input: '凌晨一点',   now: NOW_A, expect: { success: true, time: '01:00', recurrence: 'none' } },
+  { input: '下午一点',   now: NOW_A, expect: { success: true, time: '13:00', recurrence: 'none' } },
+  { input: '晚上一点',   now: NOW_A, expect: { success: true, time: '13:00', recurrence: 'none' } },
 ];

@@ -28,6 +28,8 @@ function check(c) {
   const opts = {};
   if (c.context) opts.context = c.context;
   if (c.tz) opts.tz = c.tz;
+  // 固定基准时间：让「相对时长 / 节日日期」类用例可确定性断言（默认仍取真实当前时间）
+  if (c.now !== undefined) opts.now = c.now;
   const r = parseAlarm(c.input, Object.keys(opts).length ? opts : undefined);
   const e = c.expect;
   const errs = [];

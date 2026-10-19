@@ -267,6 +267,102 @@
     const c = matchClock(t);
     return c ? (pad2(c.hour) + ':' + pad2(c.minute)) : null;
   }
+
+  /* ---------------- 复合相对时长（P1） ----------------
+   * 只处理「秒 / 分钟 / 小时」量级；「天及更大」一律交给日期增量逻辑（6天后3点 是日期，不是时长）。
+   * 支持：半小时=30min、一个半小时=90min、N个半小时=N×60+30、半天=12h、中文数字、多段相加
+   * （2小时18分钟 = 138min）。 */
+  const DUR_NUM_SRC = '(?:\\d+|[一二两三四五六七八九十]+)';
+  const DUR_SEG_SRC = [
+    DUR_NUM_SRC + '个半(?:小时|钟头)',   // 一个半小时 = 90min / 两个半小时 = 150min
+    '半个?(?:小时|钟头)',                // 半小时 = 30min
+    '半天',                              // 半天 = 12h
+    DUR_NUM_SRC + '个?(?:小时|钟头)',
+    DUR_NUM_SRC + '(?:分钟|分)',
+    DUR_NUM_SRC + '(?:秒钟|秒)'
+  ].join('|');
+  const DUR_RUN_SRC = '(?:' + DUR_SEG_SRC + ')+';
+  const DUR_PRE_SRC = '(?:再过|过了|经过)';
+  const DUR_SUF_SRC = '(?:之后|以后|之内|以内|后|内)';
+
+  /**
+   * 把一段时长描述按片段求和。
+   * @param {string} s 形如「2小时18分钟」「一个半小时」「半小时」「半天」
+   * @return {number|null} 毫秒数；无法解析返回 null
+   */
+  function parseDurationMs(s) {
+    let rest = String(s || '').replace(/\s+/g, '');
+    let total = 0, m;
+    let guard = 0;
+    while (rest.length && guard++ < 12) {
+      if ((m = rest.match(new RegExp('^(' + DUR_NUM_SRC + ')个半(?:小时|钟头)')))) {
+        const n = cnNum(m[1]);
+        if (n === null) return null;
+        total += n * 3600000 + 1800000;          // N 个半小时 = N×60 + 30 分钟
+      } else if ((m = rest.match(/^半个?(?:小时|钟头)/))) {
+        total += 1800000;                        // 半小时
+      } else if ((m = rest.match(/^半天/))) {
+        total += 43200000;                       // 半天
+      } else if ((m = rest.match(new RegExp('^(' + DUR_NUM_SRC + ')个?(?:小时|钟头)')))) {
+        const n = cnNum(m[1]);
+        if (n === null) return null;
+        total += n * 3600000;
+      } else if ((m = rest.match(new RegExp('^(' + DUR_NUM_SRC + ')(?:分钟|分)')))) {
+        const n = cnNum(m[1]);
+        if (n === null) return null;
+        total += n * 60000;
+      } else if ((m = rest.match(new RegExp('^(' + DUR_NUM_SRC + ')(?:秒钟|秒)')))) {
+        const n = cnNum(m[1]);
+        if (n === null) return null;
+        total += n * 1000;
+      } else {
+        return null;
+      }
+      rest = rest.slice(m[0].length);
+    }
+    return (rest.length || !total) ? null : total;
+  }
+
+  /**
+   * 从文本中识别相对时长表达式。
+   * 两种形态：①「X + 后/以后/之后/内」（10分钟后、10分钟内）②「再过/过了/经过 + X」（再过十分钟叫我）。
+   * @param {string} t 原始文本
+   * @return {{ms:number, consumed:string}|null}
+   */
+  function matchRelDuration(t) {
+    let m;
+    // ① 有后缀（前缀可有可无）
+    const sufRe = new RegExp(DUR_PRE_SRC + '?\\s*(' + DUR_RUN_SRC + ')\\s*' + DUR_SUF_SRC);
+    if ((m = t.match(sufRe))) {
+      const ms = parseDurationMs(m[1]);
+      if (ms) return { ms: ms, consumed: m[0] };
+    }
+    // ② 只有前缀（「再过十分钟叫我」：中文口语常省略「后」）
+    const preRe = new RegExp(DUR_PRE_SRC + '\\s*(' + DUR_RUN_SRC + ')');
+    if ((m = t.match(preRe))) {
+      const ms = parseDurationMs(m[1]);
+      if (ms) return { ms: ms, consumed: m[0] };
+    }
+    return null;
+  }
+
+  /**
+   * 时段词对小时数的校正。
+   * 凌晨/早上/上午 12点 → 0点；下午/晚上 h<12 → +12；中午 1~3 点 → +12（中午一点=13:00）。
+   * 中午 11/12 点保持原值（中午十一点=11:00、中午十二点=12:00）。
+   * @param {number} hour 解析出的小时
+   * @param {number} todAdd 时段附加量（0 或 12）
+   * @param {?string} todConsumed 命中的时段词
+   * @param {boolean} todNoon 是否为「中午/正午」
+   * @return {number} 校正后小时
+   */
+  function correctHour(hour, todAdd, todConsumed, todNoon) {
+    let h = hour;
+    if (todAdd === 12 && h < 12) h += 12;
+    if (h === 12 && todConsumed && /(凌晨|早上|上午)/.test(todConsumed)) h = 0;
+    if (todNoon && h >= 1 && h <= 3) h += 12;
+    return h;
+  }
   function matchRecurrence(t) {
     let m;
     if ((m = t.match(/(每天|每日|每一天)/))) return 'daily';
@@ -411,15 +507,10 @@
     else if ((m = text.match(/(每周|每星期|每个礼拜)([一二三四五六日天七\d])/))) { recurrence = 'weekly:' + weekNum(m[2]); consumed.push(m[0]); }
     else if ((m = text.match(/(每个月|每月)(\d{1,2}|[一二两三四五六七八九十]+)(号|日)/))) { recurrence = 'monthly:' + cnNum(m[2]); consumed.push(m[0]); }
 
-    // ---- 2. 相对时间（必须带"后/以后"后缀，避免与"提前X分钟"冲突） ----
-    let relMatch = null;
-    const relRe = /(半|一|两|二|三|四|五|六|七|八|九|十|\d+)\s*(秒钟|秒|分钟|分|小时|个?小时|钟头)\s*(后|之后|以后)/;
-    if ((m = text.match(relRe))) {
-      const isHalf = m[1] === '半';
-      const num = isHalf ? 30 : cnNum(m[1]);
-      const unit = isHalf ? '分' : m[2];   // “半小时”=30 分钟，固定为分钟单位
-      if (num !== null) { relMatch = { num, unit }; consumed.push(m[0]); }
-    }
+    // ---- 2. 相对时间（复合时长求和；「天」级交给日期逻辑，避免把 6天后 当成 +6 天时长） ----
+    let relMs = null;
+    const relDur = matchRelDuration(text);
+    if (relDur) { relMs = relDur.ms; consumed.push(relDur.consumed); }
 
     // ---- 3. 日锚点（含 今/明/后 + 早/晚/午 复合） ----
     let dayOffset = 0, dayAnchorConsumed = null;
@@ -432,6 +523,13 @@
     let compoundTod = 0;
     if (dayAnchorConsumed && /晚/.test(dayAnchorConsumed)) compoundTod = 12;
     if (dayAnchorConsumed) consumed.push(dayAnchorConsumed);
+    // ---- 3.5 「N天后」日期增量（是日期锚点，不是时长；「后天」已在 3 里优先处理） ----
+    if (dayAnchorConsumed === null) {
+      if ((m = text.match(/(\d+|[一二两三四五六七八九十]+)\s*天\s*(?:之后|以后|后)/))) {
+        const n = cnNum(m[1]);
+        if (n !== null) { dayOffset = n; dayAnchorConsumed = m[0]; consumed.push(m[0]); }
+      }
+    }
 
     // ---- 4. 星期锚点（支持汉字与数字，如 下周6 / 周6 / 星期6 / 礼拜6） ----
     let weekTarget = null, weekNext = false;
@@ -440,11 +538,11 @@
     else if ((m = text.match(/(周|星期|礼拜)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = false; consumed.push(m[0]); }
 
     // ---- 5. 时段词（校正小时） ----
-    let todAdd = compoundTod, todConsumed = null;
+    let todAdd = compoundTod, todConsumed = null, todNoon = false;
     if (todAdd === 0) {
       if ((m = text.match(/(凌晨|拂晓)/))) { todAdd = 0; todConsumed = m[0]; }
       else if ((m = text.match(/(早上|早晨|上午|清早)/))) { todAdd = 0; todConsumed = m[0]; }
-      else if ((m = text.match(/(中午|正午)/))) { todAdd = 0; todConsumed = m[0]; }
+      else if ((m = text.match(/(中午|正午)/))) { todAdd = 0; todConsumed = m[0]; todNoon = true; }
       else if ((m = text.match(/(下午|傍晚|黄昏)/))) { todAdd = 12; todConsumed = m[0]; }
       else if ((m = text.match(/(晚上|夜里|夜晚|深夜)/))) { todAdd = 12; todConsumed = m[0]; }
       else if ((m = text.match(/(晚|夜)/))) { todAdd = 12; todConsumed = m[0]; }
@@ -504,7 +602,7 @@
       if (leadMin === null && c.lead_minutes) leadMin = c.lead_minutes;
       // 矛盾：已有日期锚点，但本轮只给了"相对时长"而无具体时刻 → 需要具体几点，不能静默丢弃日期
       const ctxHasDay = c.weekTarget != null || c.dayOffset || c.absDate;
-      if (ctxHasDay && relMatch && hour === null) { contradiction = true; relMatch = null; }
+      if (ctxHasDay && relMs !== null && hour === null) { contradiction = true; relMs = null; }
     }
 
     // ---- 6.7 结束条件（仅重复闹钟） ----
@@ -541,21 +639,14 @@
       if (hour === null) {
         target = null;
       } else {
-        let h = hour;
-        if (todAdd === 12 && h < 12) h += 12;
-        if (hour === 12 && todConsumed && /中午/.test(todConsumed)) h = 12;
-        if (hour === 12 && todConsumed && /(凌晨|早上|上午)/.test(todConsumed)) h = 0;
+        const h = correctHour(hour, todAdd, todConsumed, todNoon);
         // 墙钟 → UTC：一律经 scheduler.wallToEpoch（按 tz 计算，含 DST 修正）
         target = new Date(sched().wallToEpoch(year, month, day, h, minute, tz));
         confidence = Math.max(confidence, 0.9);
       }
-    } else if (relMatch) {
-      let ms = 0;
-      const n = relMatch.num;
-      if (relMatch.unit.includes('秒')) ms = n * 1000;
-      else if (relMatch.unit.includes('分')) ms = n * 60 * 1000;
-      else if (relMatch.unit.includes('小时') || relMatch.unit.includes('钟头')) ms = n * 3600 * 1000;
-      target = new Date(now.getTime() + ms);
+    } else if (relMs !== null) {
+      // 复合时长已求和（2小时18分钟 = 138min），直接从 now 起算
+      target = new Date(now.getTime() + relMs);
       confidence = 0.9;
     } else {
       // 以用户在 tz 下的"今天"为基准，所有日历日步进走 scheduler.addDays，避免与闹钟时区错位
@@ -585,10 +676,7 @@
       if (hour === null) {
         target = null;
       } else {
-        let h = hour;
-        if (todAdd === 12 && h < 12) h += 12;
-        if (hour === 12 && todConsumed && /中午/.test(todConsumed)) h = 12;
-        if (hour === 12 && todConsumed && /(凌晨|早上|上午)/.test(todConsumed)) h = 0;
+        const h = correctHour(hour, todAdd, todConsumed, todNoon);
         // 墙钟 → UTC：一律经 scheduler.wallToEpoch（按 tz 计算，含 DST 修正）
         target = new Date(sched().wallToEpoch(baseY, baseM, baseD, h, minute, tz));
         confidence = 0.85;
