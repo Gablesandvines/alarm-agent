@@ -472,6 +472,86 @@
     return null;
   }
 
+  /* ---------------- 「过 / 差 / 零」分钟表达 ----------------
+   * 中文口语报时刻有三种说法，后缀不在「点」后面，普通 CLOCK_RE 只吃到「十点」：
+   *   ① 顺读 十点过六分 = 10:06；十点过一刻 = 10:15（过 M分 → H:M，过 M刻 → H:M×15）
+   *   ② 逆读 十点差五分 = 09:55；十点差一刻 = 09:45（差 M分 → (H-1):(60-M)）
+   *   ③ 前置 差五分十点 = 09:55（与 ② 同义，只是「差」在小时前）
+   *   ④ 零头 十点零六分 = 10:06；十点零六 = 10:06（零 M分 → H:0M）
+   * 边界：差 要求 H≥1（H=0 要跨日，不做）；M 必须在 1..59（差60分/过60分 不认，
+   * 四刻=60 同理不认）；「十点过」「十点差」后面没有分钟词 → 不匹配，交回 CLOCK_RE 出 10:00。 */
+  const OFFSET_MPART_SRC = '(?:[零一二两三四五六七八九十\\d]{1,3}\\s*刻'
+    + '|[零一二两三四五六七八九十]{1,3}\\s*分'
+    + '|\\d{1,2}\\s*分)';
+  const CLOCK_AFTER_RE = new RegExp(HOUR_SRC + '\\s*点\\s*过\\s*(' + OFFSET_MPART_SRC + ')');
+  const CLOCK_BEFORE_RE = new RegExp(HOUR_SRC + '\\s*点\\s*差\\s*(' + OFFSET_MPART_SRC + ')');
+  const CLOCK_QIAN_RE = new RegExp('差\\s*(' + OFFSET_MPART_SRC + ')\\s*' + HOUR_SRC + '\\s*点');
+  const CLOCK_LING_RE = new RegExp(HOUR_SRC + '\\s*点\\s*零\\s*([一二两三四五六七八九]|[1-9])\\s*分?');
+  // 取消/修改路径里把「过六分 / 差一刻 / 零六分」这类残留片段一并抹掉
+  const OFFSET_RESIDUE_RE = /(?:过|差)\s*(?:[零一二两三四五六七八九十\d]{1,3}\s*刻|[零一二两三四五六七八九十\d]{1,3}\s*分)|零\s*(?:[一二两三四五六七八九]|[1-9])\s*分?/g;
+
+  /**
+   * 解析「过 / 差」后面的分钟片段（不带「点」）。
+   * @param {string} part 形如「六分」「一刻」「30分」「十五分」
+   * @return {number|null} 分钟偏移（1..59 由调用方校验），无法解析返回 null
+   */
+  function parseOffsetMinutes(part) {
+    if (!part) return null;
+    const s = String(part).replace(/\s+/g, '');
+    if (/刻$/.test(s)) {
+      const k = cnNum(s.slice(0, -1));
+      return k === null ? null : k * 15;
+    }
+    if (/分$/.test(s)) {
+      const n = cnNum(s.slice(0, -1));
+      return n === null ? null : n;
+    }
+    return null;
+  }
+
+  /**
+   * 识别「过 / 差 / 零」口语句式里的时刻。
+   * @param {string} t 已掩蔽的文本
+   * @return {{hour:number, minute:number, consumed:string}|null}
+   */
+  function matchOffsetClock(t) {
+    if (!t) return null;
+    let m;
+    // ① H点过 M分 / M刻 → H:M
+    if ((m = t.match(CLOCK_AFTER_RE))) {
+      const h = cnNum(m[1]);
+      const off = parseOffsetMinutes(m[2]);
+      if (h !== null && h >= 0 && h <= 24 && off !== null && off >= 1 && off <= 59) {
+        return { hour: (h === 24 ? 0 : h), minute: off, consumed: m[0] };
+      }
+    }
+    // ② H点差 M分 / M刻 → (H-1):(60-M)
+    if ((m = t.match(CLOCK_BEFORE_RE))) {
+      const h = cnNum(m[1]);
+      const off = parseOffsetMinutes(m[2]);
+      if (h !== null && h >= 1 && h <= 24 && off !== null && off >= 1 && off <= 59) {
+        return { hour: h - 1, minute: 60 - off, consumed: m[0] };
+      }
+    }
+    // ③ 差 M分 H点 → 同 ②
+    if ((m = t.match(CLOCK_QIAN_RE))) {
+      const h = cnNum(m[2]);
+      const off = parseOffsetMinutes(m[1]);
+      if (h !== null && h >= 1 && h <= 24 && off !== null && off >= 1 && off <= 59) {
+        return { hour: h - 1, minute: 60 - off, consumed: m[0] };
+      }
+    }
+    // ④ H点零 M分 / H点零M → H:0M
+    if ((m = t.match(CLOCK_LING_RE))) {
+      const h = cnNum(m[1]);
+      const mm = cnNum(m[2]);
+      if (h !== null && h >= 0 && h <= 24 && mm !== null && mm >= 1 && mm <= 9) {
+        return { hour: (h === 24 ? 0 : h), minute: mm, consumed: m[0] };
+      }
+    }
+    return null;
+  }
+
   /**
    * 从文本中抽取一个时刻（先掩蔽非时刻词，再走统一时刻正则）。
    * @param {string} t 原始文本
@@ -483,6 +563,10 @@
     if ((m = src.match(COLON_RE))) {
       return { hour: parseInt(m[1], 10), minute: parseInt(m[2], 10), consumed: m[0] };
     }
+    // 「过 / 差 / 零」必须排在 CLOCK_RE 之前：否则「十点过六分」只会吃到「十点」。
+    // 「X:Y」「X点Y分」不受影响——它们的「点」后面紧跟分钟，不含 过/差/零 这三个字。
+    const offset = matchOffsetClock(src);
+    if (offset) return offset;
     if ((m = src.match(CLOCK_RE))) {
       const h = cnNum(m[1]);
       if (h === null) return null;
@@ -612,7 +696,7 @@
     for (const k in DAYOFF) { if (t.includes(k)) { const d = new Date(); d.setDate(d.getDate() + DAYOFF[k]); match.date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; break; } }
     let rest = t.replace(/(取消|删掉|删除|去掉|移除|撤销|关掉|改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
     // 去掉已被 time/recurrence/date 消费掉的文本，避免残留污染 label
-    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '');
+    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '').replace(OFFSET_RESIDUE_RE, '');
     rest = rest.replace(/(每天|每日|每一天|工作日|周末|每周|每星期|每个礼拜|周[一二三四五六日天七]|星期[一二三四五六日天七]|礼拜[一二三四五六日天七]|周一到周五|星期一到星期五)/g, '');
     for (const k in DAYOFF) rest = rest.split(k).join('');
     rest = rest.replace(/\s+/g, '').trim();
@@ -630,7 +714,7 @@
       u.lead_minutes = isHalf ? 30 : ((m[2].includes('小时') || m[2].includes('钟头')) ? n * 60 : n);
     }
     let rest = spec.replace(/(改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|提前|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
-    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '');
+    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '').replace(OFFSET_RESIDUE_RE, '');
     rest = rest.replace(/(每天|每日|每一天|工作日|周末|每周|每星期|每个礼拜|周[一二三四五六日天七]|星期[一二三四五六日天七]|礼拜[一二三四五六日天七]|周一到周五|星期一到星期五)/g, '');
     for (const k in DAYOFF) rest = rest.split(k).join('');
     rest = rest.replace(/\s+/g, '').trim();

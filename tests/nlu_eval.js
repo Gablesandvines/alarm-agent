@@ -385,7 +385,7 @@ function knownIssuesSection(result) {
   L.push('');
   L.push('### 6.5 下一步建议');
   L.push('');
-  L.push('1. 补「过 / 差」表达（`十点过六分`、`十点差五分`）——改动小、直击口语。');
+  L.push('1. 「过 / 差 / 零」表达已补齐（`十点过六分`=10:06、`十点差五分`=09:55、`差五分十点`=09:55、`十点零六分`=10:06），本轮 DIFF 已清零。');
   L.push('2. 裸小数误报需要更强的上下文信号（后面跟量词/单位），优先级最低。');
   L.push('3. 语料侧若要评价精度，需先把它改造成「闹钟语义」（+08 基准 + 单点钟点），本报告不背这个包袱。');
   L.push('');
@@ -409,7 +409,8 @@ function conclusion(result) {
   return '在 ' + comparable + ' 条可做严格比较的样本（绝对钟点 ' + s.absCompared + ' 条按墙钟比、相对时长 '
     + s.relCompared + ' 条按 elapsed 比）中，' + good + ' 条一致（' + rate + '%）；'
     + (b.MISSED.length ? ('MISSED ' + b.MISSED.length + ' 条是下一轮补解析口径的优先输入；') : 'MISSED 已清零（该给时刻的句子都给出来了）；')
-    + 'SUSPECT ' + b.SUSPECT.length + ' 条需人工复核是否残留误报，DIFF ' + b.DIFF.length + ' 条已定位到具体说法。';
+    + 'SUSPECT ' + b.SUSPECT.length + ' 条需人工复核是否残留误报，'
+    + (b.DIFF.length ? ('DIFF ' + b.DIFF.length + ' 条已定位到具体说法。') : 'DIFF 已清零（同构钟点/时长全部一致）。');
 }
 
 /* ---------------- 入口 ---------------- */

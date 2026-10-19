@@ -313,4 +313,42 @@ module.exports = [
   { input: '第830名',      now: NOW_A, expect: { success: false, needsClarification: true } },
   // 小时越界（24xx 不识别）
   { input: '明天2400提醒我', now: NOW_A, expect: { success: false, needsClarification: true } },
+
+  // ============================================================
+  // BugFix：「过 / 差 / 零」分钟表达
+  //   ① 十点过六分  = 10:06（顺读，过 M分 → H:M）
+  //   ② 十点差五分  = 09:55（逆读，差 M分 → (H-1):(60-M)）
+  //   ③ 差五分十点  = 09:55（差 在小时前，同 ②）
+  //   ④ 十点零六分  = 10:06（零头，零 M分 → H:0M）
+  // ============================================================
+
+  // —— 正例：顺读「过」 ——
+  { input: '十点过六分提醒我', now: NOW_A, expect: { success: true, time: '10:06', dateFixed: '2025-01-21' } },
+  { input: '十点过一刻',       now: NOW_A, expect: { success: true, time: '10:15', dateFixed: '2025-01-21' } },
+  { input: '十点过三十分',     now: NOW_A, expect: { success: true, time: '10:30', dateFixed: '2025-01-21' } },
+  // —— 正例：逆读「差」 ——
+  { input: '十点差五分',       now: NOW_A, expect: { success: true, time: '09:55', dateFixed: '2025-01-21' } },
+  { input: '十点差一刻',       now: NOW_A, expect: { success: true, time: '09:45', dateFixed: '2025-01-21' } },
+  { input: '十点差三十分',     now: NOW_A, expect: { success: true, time: '09:30', dateFixed: '2025-01-21' } },
+  // —— 正例：「差」在小时前 ——
+  { input: '差五分十点',       now: NOW_A, expect: { success: true, time: '09:55', dateFixed: '2025-01-21' } },
+  // —— 正例：零头「零」 ——
+  { input: '十点零六分',       now: NOW_A, expect: { success: true, time: '10:06', dateFixed: '2025-01-21' } },
+  { input: '十点零六',         now: NOW_A, expect: { success: true, time: '10:06', dateFixed: '2025-01-21' } },
+  // 时段校正 + 过/差 组合，label 不被残留片段污染
+  { input: '下午两点过五分开会', now: NOW_A, expect: { success: true, time: '14:05', dateFixed: '2025-01-21', labelIncludes: ['开会'] } },
+  { input: '晚上十点差一刻',     now: NOW_A, expect: { success: true, time: '21:45', dateFixed: '2025-01-21' } },
+  { input: '十点零六分提醒我吃药', now: NOW_A, expect: { success: true, time: '10:06', dateFixed: '2025-01-21', labelIncludes: ['吃药'] } },
+
+  // —— 回归反例：老行为不能被改坏 ——
+  // 「过了十分钟」仍是相对时长 +10min（基准 2025-01-21 16:00 +08）
+  { input: '过了十分钟提醒我', now: NOW_A, expect: { success: true, time: '16:10', recurrence: 'none' } },
+  { input: '十点一刻',         now: NOW_A, expect: { success: true, time: '10:15', dateFixed: '2025-01-21' } },
+  { input: '九点五十八分',     now: NOW_A, expect: { success: true, time: '09:58', dateFixed: '2025-01-21' } },
+  { input: '十点半',           now: NOW_A, expect: { success: true, time: '10:30', dateFixed: '2025-01-21' } },
+  // 「十点过 / 十点差」后面没有分钟词 → 保持 10:00
+  { input: '十点过',           now: NOW_A, expect: { success: true, time: '10:00', dateFixed: '2025-01-21' } },
+  { input: '十点差',           now: NOW_A, expect: { success: true, time: '10:00', dateFixed: '2025-01-21' } },
+  // M 必须是 1..59：「差六十分」「过六十分」不识别为 09:00/11:00，退回 10:00
+  { input: '十点差六十分',     now: NOW_A, expect: { success: true, time: '10:00', dateFixed: '2025-01-21' } },
 ];
