@@ -115,6 +115,19 @@ module.exports = [
   { input: '明天早上8点叫我起床', expect: { success: true, intent: 'create' } },
   { input: '30分钟后提醒我开会',  expect: { success: true, intent: 'create' } },
 
+  // —— I3 回归：查询意图锚定闹钟宾语，正文内容词（看/几个/呢/都有）不得误判为 query ——
+  { input: '每天下午14点10分提醒我看书', expect: { success: true, intent: 'create', time: '14:10', recurrence: 'daily', labelIncludes: ['看书'] } },
+  { input: '每天下午3点提醒我看电影',    expect: { success: true, intent: 'create', time: '15:00', recurrence: 'daily' } },
+  { input: '每天下午3点提醒我去看医生',  expect: { success: true, intent: 'create', time: '15:00', recurrence: 'daily' } },
+  { input: '明天提醒我买几个苹果',       expect: { intent: 'create' } },
+  { input: '每天提醒我背单词呢',         expect: { intent: 'create' } },
+  { input: '明天提醒我都有哪些作业要交', expect: { intent: 'create' } },
+  // 真实查询仍须判 query（查询词紧贴 闹钟/提醒 宾语）
+  { input: '查看闹钟',       expect: { success: true, intent: 'query' } },
+  { input: '看一下我的闹钟', expect: { success: true, intent: 'query' } },
+  { input: '闹钟列表',       expect: { success: true, intent: 'query' } },
+  { input: '闹钟呢',         expect: { success: true, intent: 'query' } },
+
   // —— 重复终止条件（P1 产品力）：到某天为止 / 持续N天 / 共N次 ——
   // date 型：到指定日期为止（含当天仍可触发），且结束日期不污染闹钟自身锚点
   { input: '每天8点跑步，到2027年6月1日为止', expect: { success: true, time: '08:00', recurrence: 'daily', endType: 'date', endDate: '2027-06-01', labelIncludes: ['跑步'] } },

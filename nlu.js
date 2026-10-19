@@ -210,8 +210,11 @@
     const hasDomain = /(闹钟|提醒)/.test(text);
     const hasSignal = hasDomain || !!matchTime(text) || !!matchRecurrence(text) || /所有|全部|都/.test(text);
     if (CANCEL_RE.test(text) && hasSignal) return { intent: 'cancel' };
-    // 查询类：必须含 闹钟/提醒 域词
-    if (hasDomain && /(有哪些|有什么|列出|查看|显示|看下?|查一下|告诉我|都有|几个|多少|列表|清单|在吗|呢)/.test(text)) return { intent: 'query' };
+    // 查询类：必须含 闹钟/提醒 域词，且查询词须锚定在「闹钟/提醒」宾语附近
+    // （避免正文内容词「看/几个/多少/呢/都有」误劫持建闹钟句，如「提醒我看书/买几个苹果/背单词呢」）
+    const QUERY_VERB_RE = /(查看|查一下|列出|显示|看一下|看下|告诉我|有哪些|有什么)\s*(?:的|我的)?\s*(闹钟|提醒)/;
+    const QUERY_DOMAIN_RE = /(闹钟|提醒)\s*(?:有哪些|有什么|列表|清单|有几个|多少个?|呢|在吗|都有)/;
+    if (hasDomain && (QUERY_VERB_RE.test(text) || QUERY_DOMAIN_RE.test(text))) return { intent: 'query' };
     if (/^(我的)?\s*(闹钟|提醒)\s*$/.test(text) || /(闹钟|提醒)\s*(列表|清单)/.test(text)) return { intent: 'query' };
     return { intent: 'create' };
   }
