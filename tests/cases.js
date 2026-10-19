@@ -8,6 +8,8 @@
  * ============================================================ */
 // 固定基准：2025-01-21T08:00:00Z = 上海 2025-01-21 16:00（用于相对时长/节日日期的确定性断言）
 const NOW_A = Date.parse('2025-01-21T08:00:00Z');
+// 固定基准：2026-08-01T00:00:00Z = 上海 2026-08-01 08:00（用于「当天」类节日修饰）
+const NOW_B = Date.parse('2026-08-01T00:00:00Z');
 
 module.exports = [
   // —— 日锚点 + 时段 ——
@@ -238,4 +240,47 @@ module.exports = [
   { input: '凌晨一点',   now: NOW_A, expect: { success: true, time: '01:00', recurrence: 'none' } },
   { input: '下午一点',   now: NOW_A, expect: { success: true, time: '13:00', recurrence: 'none' } },
   { input: '晚上一点',   now: NOW_A, expect: { success: true, time: '13:00', recurrence: 'none' } },
+
+  // ============================================================
+  // 第二阶段 2b：节日 / 农历 / 节气（零依赖，2024–2035）
+  // 仅给节日不给时刻时：time 为空、date 必须正确（dateResolved 断言）
+  // ============================================================
+
+  // —— 验收批次（team-lead 指定的 9 条已知日期） ——
+  { input: '2025年春节',   now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-29' } },
+  { input: '2025年中秋节', now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-10-06' } },
+  { input: '2024年春节',   now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2024-02-10' } },
+  { input: '明年春节',     now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2026-02-17' } },
+  { input: '2025年母亲节', now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-05-11' } },
+  { input: '2025年父亲节', now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-06-15' } },
+  { input: '2025年冬至',   now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-12-21' } },
+  { input: '2025年清明',   now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-04-04' } },
+  { input: '2025年端午节', now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-05-31' } },
+
+  // —— 其余农历节日 ——
+  { input: '2025年元宵节', now: NOW_A, expect: { dateResolved: '2025-02-12' } },
+  { input: '2025年重阳节', now: NOW_A, expect: { dateResolved: '2025-10-29' } },
+  { input: '2025年除夕',   now: NOW_A, expect: { dateResolved: '2025-01-28' } },
+  { input: '2026年除夕',   now: NOW_A, expect: { dateResolved: '2026-02-16' } },
+  { input: '2033年春节',   now: NOW_A, expect: { dateResolved: '2033-01-31' } },
+  // —— 公历固定节日 / 星期推算节日 ——
+  { input: '2025年情人节',   now: NOW_A, expect: { dateResolved: '2025-02-14' } },
+  { input: '2025年圣诞节',   now: NOW_A, expect: { dateResolved: '2025-12-25' } },
+  { input: '2025年感恩节',   now: NOW_A, expect: { dateResolved: '2025-11-27' } },
+  { input: '2026年母亲节',   now: NOW_A, expect: { dateResolved: '2026-05-10' } },
+  // —— 节日 + 时刻：date/time 同时正确 ——
+  { input: '2025年春节早上8点拜年', now: NOW_A, expect: { success: true, time: '08:00', dateFixed: '2025-01-29', labelIncludes: ['拜年'] } },
+  { input: '2025年中秋晚上8点赏月', now: NOW_A, expect: { success: true, time: '20:00', dateFixed: '2025-10-06', labelIncludes: ['赏月'] } },
+  { input: '2025年冬至早上7点吃饺子', now: NOW_A, expect: { success: true, time: '07:00', dateFixed: '2025-12-21', labelIncludes: ['饺子'] } },
+  // —— 修饰：前一天 / 当天 ——
+  { input: '2025年春节前一天', now: NOW_A, expect: { dateResolved: '2025-01-28' } },
+  { input: '春节前一天',       now: NOW_A, expect: { dateResolved: '2025-01-28' } },
+  { input: '中秋当天',         now: NOW_B, expect: { dateResolved: '2026-09-25' } },
+  { input: '冬至那天',         now: NOW_B, expect: { dateResolved: '2026-12-22' } },
+  { input: '春节当天早上6点',   now: NOW_A, expect: { success: true, time: '06:00', dateFixed: '2025-01-29' } },
+  // —— 不带年份：自动取最近一次未过期 ——
+  { input: '春节早上8点拜年', now: NOW_A, expect: { success: true, time: '08:00', dateFixed: '2025-01-29' } },
+  // —— 超出覆盖年份：不猜，明确提示 ——
+  { input: '2040年春节', now: NOW_A, expect: { success: false, needsClarification: true, clarifyType: 'out_of_range', dateResolved: null } },
+  { input: '2023年春节', now: NOW_A, expect: { success: false, needsClarification: true, clarifyType: 'out_of_range', dateResolved: null } },
 ];

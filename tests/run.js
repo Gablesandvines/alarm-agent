@@ -109,6 +109,14 @@ function check(c) {
       errs.push(`partial.absDate 期望 ${em}/${ed} 实得 ${r.partial && r.partial.absDate ? r.partial.absDate.month + '/' + r.partial.absDate.day : 'null'}`);
   }
 
+  // 已解析出的公历日：成功路径取 alarm.date，缺时刻路径取顶层 date
+  // （节日/农历/节气即使没给时刻，date 也必须正确，此时 time 为空）
+  if (e.dateResolved !== undefined) {
+    const got = (r.alarm && r.alarm.date) || r.date || null;
+    if (got !== e.dateResolved)
+      errs.push(`date 期望 ${e.dateResolved === null ? 'null' : '"' + e.dateResolved + '"'} 实得 ${got === null ? 'null' : '"' + got + '"'}`);
+  }
+
   if (r.success) {
     const a = r.alarm;
     if (e.time !== undefined && a.time !== e.time)

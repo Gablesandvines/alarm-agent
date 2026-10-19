@@ -74,38 +74,194 @@
     return null;
   }
 
-  // 节假日识别：返回与 absDate 同结构的 { year?, month, day, consumed }
-  // 阳历节日为固定月日（year 留空→按"过期顺延"）；农历节日给近年份的精确公历日期（需逐年维护或可接转换库）
-  const HOLIDAY_SOLAR = {
-    '元旦': [1, 1], '元旦节': [1, 1], '劳动节': [5, 1], '劳动': [5, 1], '五一': [5, 1],
-    '国庆': [10, 1], '国庆节': [10, 1], '儿童节': [6, 1], '妇女节': [3, 8], '青年节': [5, 4],
-    '教师节': [9, 10], '建军节': [8, 1], '植树节': [3, 12], '清明节': [4, 5], '圣诞': [12, 25], '圣诞节': [12, 25]
-  };
-  const HOLIDAY_LUNAR = {
-    '春节': { '2026': [2, 17], '2027': [2, 6] },
-    '元宵': { '2026': [3, 3], '2027': [2, 21] },
-    '端午': { '2026': [6, 19], '2027': [6, 9] },
-    '七夕': { '2026': [8, 19], '2027': [8, 8] },
-    '中秋': { '2026': [9, 25], '2027': [9, 15] }, '中秋节': { '2026': [9, 25], '2027': [9, 15] },
-    '重阳': { '2026': [10, 18], '2027': [10, 8] }
-  };
-  function parseHoliday(text, now) {
-    for (const name in HOLIDAY_SOLAR) {
-      if (text.includes(name)) return { month: HOLIDAY_SOLAR[name][0], day: HOLIDAY_SOLAR[name][1], consumed: name };
+  /* ============================================================
+   * 节日 / 农历 / 节气（P1，零依赖）
+   *
+   * 数据来源与许可：
+   *   1) 农历年表 LUNAR_INFO 采用公开流传的「农历 1900—2100 年压缩年表（lunarInfo）」
+   *      编码方式与 1900-01-31 基准日，取自 jjonline/calendar.js
+   *      （《1900年至2100年公历、农历互转 Js 代码》，MIT 许可；同表亦见于多个 MIT / 公有领域实现）。
+   *      本文件只收录 1900—2039 段：1900—2023 用于累计天数，2024—2039 为可查询年份。
+   *   2) 节气采用同一族实现中的「均值太阳项公式」（sTermInfo 24 项毫秒偏移，基准 1900-01-06 02:05 UTC），
+   *      该公式输出即北京时间的节气日期，2024—2035 区间与权威日历一致（见测试断言）。
+   *   3) 母亲节/父亲节/感恩节按「某月第 N 个周 X」规则推算，无需年表。
+   *
+   * 覆盖年份 2024—2035。超出范围一律不猜：返回 outOfRange，由上层给出「年份超出支持范围」的澄清提示。
+   * ============================================================ */
+  const FEST_YEAR_MIN = 2024, FEST_YEAR_MAX = 2035;
+
+  // 农历 1900—2039 年表（0x0 段 = 闰月月份，bit4-15 = 各月大小，bit16 = 闰月是否 30 天）
+  const LUNAR_INFO = [
+    0x04bd8, 0x04ae0, 0x0a570, 0x054d5, 0x0d260, 0x0d950, 0x16554, 0x056a0, 0x09ad0, 0x055d2, // 1900-1909
+    0x04ae0, 0x0a5b6, 0x0a4d0, 0x0d250, 0x1d255, 0x0b540, 0x0d6a0, 0x0ada2, 0x095b0, 0x14977, // 1910-1919
+    0x04970, 0x0a4b0, 0x0b4b5, 0x06a50, 0x06d40, 0x1ab54, 0x02b60, 0x09570, 0x052f2, 0x04970, // 1920-1929
+    0x06566, 0x0d4a0, 0x0ea50, 0x06e95, 0x05ad0, 0x02b60, 0x186e3, 0x092e0, 0x1c8d7, 0x0c950, // 1930-1939
+    0x0d4a0, 0x1d8a6, 0x0b550, 0x056a0, 0x1a5b4, 0x025d0, 0x092d0, 0x0d2b2, 0x0a950, 0x0b557, // 1940-1949
+    0x06ca0, 0x0b550, 0x15355, 0x04da0, 0x0a5b0, 0x14573, 0x052b0, 0x0a9a8, 0x0e950, 0x06aa0, // 1950-1959
+    0x0aea6, 0x0ab50, 0x04b60, 0x0aae4, 0x0a570, 0x05260, 0x0f263, 0x0d950, 0x05b57, 0x056a0, // 1960-1969
+    0x096d0, 0x04dd5, 0x04ad0, 0x0a4d0, 0x0d4d4, 0x0d250, 0x0d558, 0x0b540, 0x0b6a0, 0x195a6, // 1970-1979
+    0x095b0, 0x049b0, 0x0a974, 0x0a4b0, 0x0b27a, 0x06a50, 0x06d40, 0x0af46, 0x0ab60, 0x09570, // 1980-1989
+    0x04af5, 0x04970, 0x064b0, 0x074a3, 0x0ea50, 0x06b58, 0x055c0, 0x0ab60, 0x096d5, 0x092e0, // 1990-1999
+    0x0c960, 0x0d954, 0x0d4a0, 0x0da50, 0x07552, 0x056a0, 0x0abb7, 0x025d0, 0x092d0, 0x0cab5, // 2000-2009
+    0x0a950, 0x0b4a0, 0x0baa4, 0x0ad50, 0x055d9, 0x04ba0, 0x0a5b0, 0x15176, 0x052b0, 0x0a930, // 2010-2019
+    0x07954, 0x06aa0, 0x0ad50, 0x05b52, 0x04b60, 0x0a6e6, 0x0a4e0, 0x0d260, 0x0ea65, 0x0d530, // 2020-2029
+    0x05aa0, 0x076a3, 0x096d0, 0x04afb, 0x04ad0, 0x0a4d0, 0x1d0b6, 0x0d250, 0x0d520, 0x0dd45  // 2030-2039
+  ];
+  const LUNAR_BASE_UTC = Date.UTC(1900, 0, 31);   // 1900-01-31 = 农历 1900 年正月初一
+  const DAY_MS = 86400000;
+
+  /** 农历 y 年的闰月月份（0 = 无闰月） */
+  function lunarLeapMonth(y) { return LUNAR_INFO[y - 1900] & 0xf; }
+  /** 农历 y 年闰月的天数（无闰月为 0） */
+  function lunarLeapDays(y) { return lunarLeapMonth(y) ? ((LUNAR_INFO[y - 1900] & 0x10000) ? 30 : 29) : 0; }
+  /** 农历 y 年第 m 月（m=1..12）的天数 */
+  function lunarMonthDays(y, m) { return (LUNAR_INFO[y - 1900] & (0x10000 >> m)) ? 30 : 29; }
+  /** 农历 y 年的总天数 */
+  function lunarYearDays(y) {
+    let sum = 348;
+    for (let i = 0x8000; i > 0x8; i >>= 1) sum += (LUNAR_INFO[y - 1900] & i) ? 1 : 0;
+    return sum + lunarLeapDays(y);
+  }
+  /**
+   * 农历 y 年 m 月 d 日 → 公历 {y, m, d}
+   * @return {{y:number, m:number, d:number}|null} 超年表范围返回 null
+   */
+  function lunarToYmd(y, m, d) {
+    if (y < 1900 || y > 2039) return null;
+    let offset = 0;
+    for (let i = 1900; i < y; i++) offset += lunarYearDays(i);
+    const leap = lunarLeapMonth(y);
+    for (let i = 1; i < m; i++) {
+      offset += lunarMonthDays(y, i);
+      if (leap && i === leap) offset += lunarLeapDays(y);
     }
-    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    for (const name in HOLIDAY_LUNAR) {
-      if (text.includes(name)) {
-        const map = HOLIDAY_LUNAR[name];
-        const cands = [now.getFullYear(), now.getFullYear() + 1]
-          .filter(y => map[String(y)])
-          .map(y => ({ y: +y, md: map[String(y)] }));
-        cands.sort((a, b) => new Date(a.y, a.md[0] - 1, a.md[1]) - new Date(b.y, b.md[0] - 1, b.md[1]));
-        const chosen = cands.find(c => new Date(c.y, c.md[0] - 1, c.md[1]) >= today0) || cands[0];
-        if (chosen) return { year: chosen.y, month: chosen.md[0], day: chosen.md[1], consumed: name };
-      }
+    offset += d - 1;
+    const dt = new Date(LUNAR_BASE_UTC + offset * DAY_MS);
+    return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
+  }
+
+  // 24 节气：名称 → sTermInfo 下标（0=小寒 … 23=冬至）
+  const S_TERM_NAMES = {
+    '小寒': 0, '大寒': 1, '立春': 2, '雨水': 3, '惊蛰': 4, '春分': 5, '清明': 6, '谷雨': 7,
+    '立夏': 8, '小满': 9, '芒种': 10, '夏至': 11, '小暑': 12, '大暑': 13, '立秋': 14, '处暑': 15,
+    '白露': 16, '秋分': 17, '寒露': 18, '霜降': 19, '立冬': 20, '小雪': 21, '大雪': 22, '冬至': 23,
+    '清明节': 6, '冬至节': 23
+  };
+  const S_TERM_INFO = [
+    0, 21208, 42467, 63836, 85337, 107014, 128867, 150921, 173149, 195551, 218072, 240693,
+    263343, 285989, 308563, 331033, 353350, 375494, 397447, 419210, 440795, 462224, 483532, 504758
+  ];
+  /** 公历 year 年第 n 个节气 → {y, m, d}（公式输出即北京时间日期） */
+  function solarTermYmd(year, n) {
+    const ms = 31556925974.7 * (year - 1900) + S_TERM_INFO[n] * 60000 + Date.UTC(1900, 0, 6, 2, 5);
+    const dt = new Date(ms);
+    return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
+  }
+
+  // 阳历固定节日
+  const SOLAR_FESTIVALS = {
+    '元旦': [1, 1], '元旦节': [1, 1], '情人节': [2, 14], '妇女节': [3, 8], '植树节': [3, 12],
+    '劳动节': [5, 1], '劳动': [5, 1], '五一': [5, 1], '青年节': [5, 4], '儿童节': [6, 1],
+    '建军节': [8, 1], '教师节': [9, 10], '国庆': [10, 1], '国庆节': [10, 1],
+    '圣诞': [12, 25], '圣诞节': [12, 25]
+  };
+  // 农历节日（月, 日）；除夕单独按「春节前一天」推算（腊月可能是 29 天）
+  const LUNAR_FESTIVALS = {
+    '春节': [1, 1], '元宵': [1, 15], '元宵节': [1, 15], '端午': [5, 5], '端午节': [5, 5],
+    '七夕': [7, 7], '中秋': [8, 15], '中秋节': [8, 15], '重阳': [9, 9], '重阳节': [9, 9]
+  };
+  // 按星期推算：{ m: 月, w: 星期几(0=周日), n: 第几个 }
+  const WEEK_FESTIVALS = {
+    '母亲节': { m: 5, w: 0, n: 2 },   // 5 月第 2 个周日
+    '父亲节': { m: 6, w: 0, n: 3 },   // 6 月第 3 个周日
+    '感恩节': { m: 11, w: 4, n: 4 }   // 11 月第 4 个周四
+  };
+
+  /** 公历 year 年 month 月第 n 个星期 w 的日期 */
+  function weekFestivalYmd(year, month, w, n) {
+    const first = new Date(Date.UTC(year, month - 1, 1));
+    const delta = (w - first.getUTCDay() + 7) % 7;
+    return { y: year, m: month, d: 1 + delta + (n - 1) * 7 };
+  }
+
+  /** 名称表：长名优先（避免「中秋节」被「中秋」截断） */
+  const FEST_NAMES = (function () {
+    const names = [];
+    [SOLAR_FESTIVALS, LUNAR_FESTIVALS, WEEK_FESTIVALS, S_TERM_NAMES].forEach(function (o) {
+      for (const k in o) names.push(k);
+    });
+    names.push('除夕');
+    names.sort(function (a, b) { return b.length - a.length; });
+    return names;
+  })();
+
+  /** 节日名称 + 公历年份 → 公历日期 */
+  function festivalYmd(name, year) {
+    let m;
+    if (name === '除夕') {
+      const cny = lunarToYmd(year, 1, 1);
+      if (!cny) return null;
+      const dt = new Date(Date.UTC(cny.y, cny.m - 1, cny.d) - DAY_MS);
+      return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
     }
+    if ((m = SOLAR_FESTIVALS[name])) return { y: year, m: m[0], d: m[1] };
+    if ((m = LUNAR_FESTIVALS[name])) return lunarToYmd(year, m[0], m[1]);
+    if ((m = WEEK_FESTIVALS[name])) return weekFestivalYmd(year, m.m, m.w, m.n);
+    if (S_TERM_NAMES[name] !== undefined) return solarTermYmd(year, S_TERM_NAMES[name]);
     return null;
+  }
+
+  const ymdNum = function (o) { return o.y * 10000 + o.m * 100 + o.d; };
+  const inFestYears = function (y) { return y >= FEST_YEAR_MIN && y <= FEST_YEAR_MAX; };
+
+  /**
+   * 节日/农历/节气识别。返回与 absDate 同结构的 { year, month, day, consumed }（已解析成具体公历日）。
+   * 支持修饰：前一天 / 后一天 / 当天（那天、当日）。
+   * @param {string} text 原始文本（不掩蔽，节日名不在掩蔽词典内）
+   * @param {{y:number, mo:number, d:number}} todayTz 用户在目标时区下的「今天」
+   * @return {{year:number, month:number, day:number, consumed:string}|{outOfRange:boolean, name:string, year:number}|null}
+   */
+  function parseHoliday(text, todayTz) {
+    let name = null;
+    for (let i = 0; i < FEST_NAMES.length; i++) {
+      if (text.indexOf(FEST_NAMES[i]) >= 0) { name = FEST_NAMES[i]; break; }
+    }
+    if (!name) return null;
+
+    // 年份：显式 4 位 > 后年/明年/今年 > 自动取「最近一次未过期」
+    let year = null, m;
+    if ((m = text.match(/(\d{4})\s*年/))) year = parseInt(m[1], 10);
+    else if (/后年/.test(text)) year = todayTz.y + 2;
+    else if (/明年|次年/.test(text)) year = todayTz.y + 1;
+    else if (/今年|本年|这年/.test(text)) year = todayTz.y;
+
+    let ymd = null;
+    if (year !== null) {
+      if (!inFestYears(year)) return { outOfRange: true, name: name, year: year };
+      ymd = festivalYmd(name, year);
+      if (!ymd) return { outOfRange: true, name: name, year: year };
+    } else {
+      // todayTz 的字段是 {y, mo, d}（scheduler.tzDateParts 的约定），不能直接喂 ymdNum
+      const todayNum = todayTz.y * 10000 + todayTz.mo * 100 + todayTz.d;
+      for (let i = 0; i <= 2; i++) {
+        const y = todayTz.y + i;
+        if (!inFestYears(y)) continue;
+        const cand = festivalYmd(name, y);
+        if (cand && ymdNum(cand) >= todayNum) { ymd = cand; break; }
+      }
+      if (!ymd) return { outOfRange: true, name: name, year: todayTz.y };
+    }
+
+    // 修饰：前一天 / 后一天（当天、那天 = 原日）
+    let delta = 0;
+    if (/前一天|前一日|之前一天/.test(text)) delta = -1;
+    else if (/后一天|后一日|隔天/.test(text)) delta = 1;
+    if (delta) {
+      const dt = new Date(Date.UTC(ymd.y, ymd.m - 1, ymd.d) + delta * DAY_MS);
+      ymd = { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
+    }
+    if (!inFestYears(ymd.y)) return { outOfRange: true, name: name, year: ymd.y };
+    return { year: ymd.y, month: ymd.m, day: ymd.d, consumed: name };
   }
 
   // 多轮澄清：把已理解的日期/星期锚点描述成中文，用于聚焦追问
@@ -121,6 +277,30 @@
     }
     return '那天';
   }
+  /**
+   * 把 absDate 补全成具体公历日：未给年份 → 今年（已过期则顺延）；未给月份 → 本月（已过期则次月）。
+   * @param {{year?:number, month?:number, day:number}} absDate 绝对日期锚点
+   * @param {{y:number, mo:number, d:number}} todayTz 用户在目标时区下的「今天」
+   * @return {{y:number, mo:number, d:number}}
+   */
+  function resolveAbsYmd(absDate, todayTz) {
+    let year = absDate.year, month = absDate.month;
+    const day = absDate.day;
+    const todayNum = todayTz.y * 10000 + todayTz.mo * 100 + todayTz.d;
+    if (year === undefined) {
+      year = todayTz.y;
+      if (year * 10000 + month * 100 + day < todayNum) year += 1;
+    }
+    if (month === undefined) {
+      month = todayTz.mo;
+      if (year * 10000 + month * 100 + day < todayNum) {
+        month += 1;
+        if (month > 12) { month = 1; year += 1; }
+      }
+    }
+    return { y: year, mo: month, d: day };
+  }
+
   // 构造 partial：仅保留已理解、但仍缺具体时刻的锚点，供下一轮结构化合并
   function buildPartial(o) {
     const p = {};
@@ -584,7 +764,18 @@
         i = j - 1;
       }
     }
-    let absDate = parseAbsDate(timeText) || parseHoliday(text, now);
+    // 节日/农历/节气：先让绝对日期优先（2025年10月10日 这类不走节日表）
+    let absDate = parseAbsDate(timeText);
+    let holidayError = null;
+    if (!absDate) {
+      const fest = parseHoliday(text, todayTz);
+      if (fest && fest.outOfRange) {
+        holidayError = '「' + fest.name + '」' + fest.year + ' 年的日期超出支持范围（'
+          + FEST_YEAR_MIN + '–' + FEST_YEAR_MAX + '），请换个年份，或直接说公历日期（如「12月25日」）';
+      } else if (fest) {
+        absDate = { year: fest.year, month: fest.month, day: fest.day, consumed: fest.consumed };
+      }
+    }
 
     // ---- 6.6 多轮澄清：用上一轮已理解的锚点补全本轮（结构化合并，避免盲目拼接丢上下文） ----
     let contradiction = false;
@@ -618,30 +809,19 @@
 
     // ---- 7. 组合时间 ----
     let target = null;
+    // 绝对日期的年/月补全（未给年份/月份时按"已过期则顺延"），「有时刻」「缺时刻」两条路径共用
+    const resolvedYmd = absDate ? resolveAbsYmd(absDate, todayTz) : null;
+    const resolvedDateStr = resolvedYmd
+      ? resolvedYmd.y + '-' + pad2(resolvedYmd.mo) + '-' + pad2(resolvedYmd.d) : null;
 
     if (absDate) {
-      // 绝对日期优先；未给年份/月份时按"已过期则顺延"补全（基于用户在 tz 下的"今天"）
-      let year = absDate.year, month = absDate.month, day = absDate.day;
-      const todayNum = todayTz.y * 10000 + todayTz.mo * 100 + todayTz.d;
-      if (year === undefined) {
-        year = todayTz.y;
-        if (year * 10000 + month * 100 + day < todayNum) year += 1;
-      }
-      if (month === undefined) {
-        month = todayTz.mo;
-        if (year * 10000 + month * 100 + day < todayNum) {
-          month += 1;
-          if (month > 12) { month = 1; year += 1; }
-        }
-      }
-      const base = new Date(year, month - 1, day);
       consumed.push(absDate.consumed);
       if (hour === null) {
         target = null;
       } else {
         const h = correctHour(hour, todAdd, todConsumed, todNoon);
         // 墙钟 → UTC：一律经 scheduler.wallToEpoch（按 tz 计算，含 DST 修正）
-        target = new Date(sched().wallToEpoch(year, month, day, h, minute, tz));
+        target = new Date(sched().wallToEpoch(resolvedYmd.y, resolvedYmd.mo, resolvedYmd.d, h, minute, tz));
         confidence = Math.max(confidence, 0.9);
       }
     } else if (relMs !== null) {
@@ -684,6 +864,9 @@
       }
     }
 
+    // 节日年份越界：不猜日期，也不回落到「今天 + 时刻」
+    if (holidayError) target = null;
+
     // ---- 7.5 提前提醒：触发时间前移 leadMin 分钟 ----
     if (leadMin !== null && target) {
       target = new Date(target.getTime() - leadMin * 60000);
@@ -706,8 +889,15 @@
       // 已理解日期/星期锚点但缺具体时刻 → 聚焦追问"几点"（而非笼统报错），并保留 partial 供下一轮合并
       const hasDayAnchor = weekTarget !== null || dayOffset !== 0 || absDate;
       let clarification;
-      if (contradiction || hasDayAnchor) {
-        const dayDesc = describeDay({ weekTarget, weekNext, dayOffset, absDate, recurrence });
+      if (holidayError) {
+        // 节日年份超出支持范围：不猜日期，直接说清楚
+        clarification = {
+          type: 'out_of_range',
+          question: holidayError,
+          suggestions: [FEST_YEAR_MIN + '年春节', FEST_YEAR_MIN + '年中秋', '明天上午9点']
+        };
+      } else if (contradiction || hasDayAnchor) {
+        const dayDesc = resolvedDateStr || describeDay({ weekTarget, weekNext, dayOffset, absDate, recurrence });
         clarification = {
           type: 'time_of_day',
           question: contradiction ? (dayDesc + ' 需要一个具体时刻，例如：') : (dayDesc + ' 几点？例如：'),
@@ -725,6 +915,8 @@
       ambiguities.push(clarification.question);
       return {
         success: false, raw: text, alarm: null, intent: 'create',
+        // date：已解析出的公历日（节日/绝对日期无时刻时也有值，time 为空）
+        date: resolvedDateStr,
         confidence: Number(confidence.toFixed(2)),
         needs_clarification: true, ambiguities, clarification,
         partial: buildPartial({ recurrence, weekTarget, weekNext, dayOffset, absDate, leadMin, label })
@@ -743,6 +935,7 @@
 
     return {
       success: true, raw: text, intent: 'create',
+      date: resolvedDateStr || `${tp.y}-${pad(tp.mo)}-${pad(tp.d)}`,
       alarm: {
         timestamp: Math.floor(target.getTime() / 1000), // Unix 秒级时间戳（UTC）
         datetime: iso,
