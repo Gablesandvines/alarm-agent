@@ -1,6 +1,6 @@
 /* 闹钟 Agent Service Worker — 缓存应用外壳 + Web Push 接收 */
 const CACHE='alarm-agent-v1';
-const ASSETS=['./','./index.html','./nlu.js','./manifest.webmanifest','./icon.svg'];
+const ASSETS=['./','./index.html','./nlu.js','./scheduler.js','./manifest.webmanifest','./icon.svg'];
 
 self.addEventListener('install',e=>{ e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())); });
 self.addEventListener('activate',e=>{ e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())); });

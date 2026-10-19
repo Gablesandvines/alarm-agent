@@ -134,7 +134,8 @@ CREATE TABLE IF NOT EXISTS legacy_alarms (
   next_trigger INTEGER,
   end_json TEXT,
   fired_count INTEGER NOT NULL DEFAULT 0,
-  timezone TEXT DEFAULT 'Asia/Shanghai'
+  timezone TEXT DEFAULT 'Asia/Shanghai',
+  enabled INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS rate_limits (
   key_hash TEXT NOT NULL,
@@ -154,6 +155,8 @@ migrateKeysSchema();
 migrateDeliveriesSchema();
 // legacy_alarms 表补充 lead_minutes（重复闹钟提前提醒依赖），旧库自动 ALTER
 migrateLegacyAlarmsSchema();
+// legacy_alarms 表补充 enabled 列（F1：单闹钟启停，默认启用），旧库 ALTER 补齐
+migrateLegacyAlarmsEnabled();
 // keys 表补充 default_timezone（租户级默认时区，P3），旧库自动 ALTER
 migrateKeysDefaultTz();
 
@@ -315,19 +318,27 @@ function listLegacyAlarms() {
     timestamp: r.timestamp, time: r.time, recurrence: r.recurrence, label: r.label,
     lead_minutes: r.lead_minutes || 0, end: r.end_json ? JSON.parse(r.end_json) : null,
     fired: !!r.fired, nextTrigger: r.next_trigger, fired_count: r.fired_count || 0,
-    timezone: r.timezone || null
+    timezone: r.timezone || null,
+    enabled: r.enabled === undefined ? true : !!r.enabled
   }));
 }
 function saveLegacyAlarm(a) {
   db.prepare(`INSERT OR REPLACE INTO legacy_alarms
-    (id, client_id, subscription_json, timestamp, time, recurrence, label, lead_minutes, fired, next_trigger, end_json, fired_count, timezone)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    (id, client_id, subscription_json, timestamp, time, recurrence, label, lead_minutes, fired, next_trigger, end_json, fired_count, timezone, enabled)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(a.id, a.clientId, a.subscription ? JSON.stringify(a.subscription) : null, a.timestamp || 0,
       a.time, a.recurrence || 'none', a.label || '', a.lead_minutes || 0, a.fired ? 1 : 0, a.nextTrigger || 0,
-      a.end ? JSON.stringify(a.end) : null, a.fired_count || 0, a.timezone || 'Asia/Shanghai');
+      a.end ? JSON.stringify(a.end) : null, a.fired_count || 0, a.timezone || 'Asia/Shanghai', a.enabled !== false ? 1 : 0);
 }
 function deleteLegacyAlarm(clientId, id) {
   return db.prepare('DELETE FROM legacy_alarms WHERE client_id = ? AND id = ?').run(clientId, id).changes > 0;
+}
+
+// F1：单闹钟启停——按 clientId + id 更新 enabled；命中返回 true（changes>0），未命中返回 false。
+function setLegacyAlarmEnabled(clientId, id, enabled) {
+  const r = db.prepare('UPDATE legacy_alarms SET enabled = ? WHERE client_id = ? AND id = ?')
+    .run(enabled ? 1 : 0, clientId, id);
+  return r.changes > 0;
 }
 
 // ---------- 待投递队列（Webhook 持久化，支持崩溃恢复） ----------
@@ -454,6 +465,14 @@ function migrateLegacyAlarmsSchema() {
   }
 }
 
+// legacy_alarms 表补充 enabled 列（F1：单闹钟启停，默认启用）。旧库 ALTER 补齐，幂等。
+function migrateLegacyAlarmsEnabled() {
+  const cols = db.prepare('PRAGMA table_info(legacy_alarms)').all().map(c => c.name);
+  if (!cols.includes('enabled')) {
+    db.exec('ALTER TABLE legacy_alarms ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1');
+  }
+}
+
 // keys 表补充 default_timezone 列（租户级默认时区，P3-P1-3）。旧库 ALTER 补齐，幂等。
 function migrateKeysDefaultTz() {
   const cols = db.prepare('PRAGMA table_info(keys)').all().map(c => c.name);
@@ -547,5 +566,5 @@ module.exports = {
   getUsage, bumpUsage,
   checkRateLimit, pruneStaleRateEvents, incrMetric, getMetrics,
   enqueueDelivery, getDueDeliveries, claimDelivery, recoverStuckDeliveries, pruneDeliveries, markDeliverySuccess, markDeliveryRetry,
-  listSubs, addSub, deleteSub, listLegacyAlarms, saveLegacyAlarm, deleteLegacyAlarm
+  listSubs, addSub, deleteSub, listLegacyAlarms, saveLegacyAlarm, deleteLegacyAlarm, setLegacyAlarmEnabled
 };

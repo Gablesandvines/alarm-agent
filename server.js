@@ -592,7 +592,7 @@ async function handleApi(req, res) {
         subscription: sub ? sub.subscription : body.subscription,
         timestamp: body.timestamp, time: body.time, recurrence: body.recurrence || 'none',
         label: body.label || '', lead_minutes: body.lead_minutes || 0, timezone: tz,
-        end: body.end || null, fired: false, fired_count: body.fired_count || 0, nextTrigger: (body.timestamp || 0) * 1000
+        end: body.end || null, fired: false, enabled: body.enabled !== false, fired_count: body.fired_count || 0, nextTrigger: (body.timestamp || 0) * 1000
       };
       db.saveLegacyAlarm(alarm);
       console.log('[alarm] 已登记', alarm.id, alarm.time, alarm.recurrence);
@@ -602,6 +602,14 @@ async function handleApi(req, res) {
       const body = await readBody(req);
       const ok = db.deleteLegacyAlarm(body.clientId, body.id);
       return sendJSON(res, { ok: true, removed: ok ? 1 : 0 });
+    }
+    // F1：单闹钟启停同步（沿用本段 App Key 门控；enabled 缺省视为 true）
+    if (url === '/api/alarm/update' && req.method === 'POST') {
+      const body = await readBody(req);
+      const enabled = body.enabled !== false;
+      const ok = db.setLegacyAlarmEnabled(body.clientId, body.id, enabled);
+      if (!ok) return appError(res, 'not_found', 'alarm not found', 404);
+      return sendJSON(res, { ok: true, enabled });
     }
     if (url === '/api/parse' && req.method === 'POST') {
       // 全局限流：/api/parse 不经过平台按 key 配额，需独立限流防止被白嫖刷量
@@ -652,9 +660,11 @@ const server = http.createServer((req, res) => {
 const MISS_GRACE = 120000; // 若超过 2 分钟未推送（如服务宕机），视为错过，不再补发
 setInterval(() => {
   const now = Date.now();
+  const firedSig = new Set(); // F2：双循环共享去重签名集（同 tick 内同签名只投递一次）
   // 参考 App 本地闹钟（Web Push）
   for (const a of db.listLegacyAlarms()) {
     if (!a.nextTrigger || a.fired || a.nextTrigger > now) continue;
+    if (a.enabled === false) continue; // F1：禁用即跳过 Web Push
     const tz = a.timezone || 'Asia/Shanghai';
     if (now - a.nextTrigger > MISS_GRACE) { // 错过
       if (a.recurrence === 'none') a.fired = true;
@@ -665,17 +675,24 @@ setInterval(() => {
       }
       db.saveLegacyAlarm(a); continue;
     }
-    if (a.subscription) {
-      const payload = JSON.stringify({ title: '⏰ 闹钟', body: (a.label || '时间到') + '  ·  ' + a.time, time: a.time });
-      webpush.sendNotification(a.subscription, payload).catch(err => {
-        console.warn('[push] 发送失败', a.id, err.statusCode || err.message);
-        if (err.statusCode === 404 || err.statusCode === 410) { // 订阅失效
-          db.deleteSub(a.clientId);
-        }
-      });
-    } else {
-      // 无订阅（如服务端重建后 subs 为空、客户端尚未重注册）：不静默跳过，记警告便于排查；本地通知兜底
-      console.warn('[push] 闹钟', a.id, '无可用订阅（clientId=' + a.clientId + '），跳过云端推送（仅本地兜底）');
+    // F2：双模型防御性去重——同 tick 内同签名（clientId|time|recurrence|label）只投递一次
+    const sig = 'legacy|' + (a.clientId || '') + '|' + a.time + '|' + a.recurrence + '|' + a.label;
+    const dup = firedSig.has(sig);
+    if (dup) console.warn('[dedup] 双模型重复触发', sig);
+    else firedSig.add(sig);
+    if (!dup) {
+      if (a.subscription) {
+        const payload = JSON.stringify({ title: '⏰ 闹钟', body: (a.label || '时间到') + '  ·  ' + a.time, time: a.time });
+        webpush.sendNotification(a.subscription, payload).catch(err => {
+          console.warn('[push] 发送失败', a.id, err.statusCode || err.message);
+          if (err.statusCode === 404 || err.statusCode === 410) { // 订阅失效
+            db.deleteSub(a.clientId);
+          }
+        });
+      } else {
+        // 无订阅（如服务端重建后 subs 为空、客户端尚未重注册）：不静默跳过，记警告便于排查；本地通知兜底
+        console.warn('[push] 闹钟', a.id, '无可用订阅（clientId=' + a.clientId + '），跳过云端推送（仅本地兜底）');
+      }
     }
     if (a.recurrence === 'none') a.fired = true;
     else {
@@ -695,9 +712,16 @@ setInterval(() => {
     if (!a.enabled || !a.next_trigger || a.next_trigger > now) continue;
     const keyRec = db.getEnabledKeyForTenant(a.tenant);
     const wh = a.webhook_url || (keyRec && keyRec.webhook_url);
-    if (wh && keyRec) enqueueWebhookDelivery(keyRec.key, wh, a, now);
-    if (keyRec) bumpUsage(keyRec.key, 'fire_count');
     const al = a.alarm;
+    // F2：双模型防御性去重（与 legacy 共享 firedSig）——同 tick 内同签名只 enqueue 一次
+    const sig = 'plat|' + a.tenant + '|' + al.time + '|' + al.recurrence + '|' + al.label;
+    const dup = firedSig.has(sig);
+    if (dup) console.warn('[dedup] 双模型重复触发', sig);
+    else firedSig.add(sig);
+    if (!dup) {
+      if (wh && keyRec) enqueueWebhookDelivery(keyRec.key, wh, a, now);
+    }
+    if (keyRec) bumpUsage(keyRec.key, 'fire_count');
     if (al.recurrence === 'none') a.next_trigger = null;
     else {
       a.next_trigger = nextTriggerMs(al); // 含日期/天数终止（返回 null 即停）

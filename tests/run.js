@@ -201,8 +201,20 @@ console.log(`\n结果：通过 ${pass} / ${cases.length}，失败 ${fail}\n`);
 if (fail > 0) {
   console.log('失败用例：');
   failures.forEach(f => { console.log(`  · ${f.input}`); f.errs.forEach(x => console.log(`      - ${x}`)); });
-  process.exit(1);
-} else {
-  console.log('全部通过 ✓');
-  process.exit(0);
 }
+
+// 第一阶段（F1 / F2 / E1）回归：独立 server 子进程做 HTTP/集成断言
+(async () => {
+  let phase1Pass = 0, phase1Fail = 0;
+  try {
+    const phase1 = require('./phase1.js');
+    const r = await phase1.run();
+    phase1Pass = r.pass; phase1Fail = r.fail;
+  } catch (e) {
+    console.error('[phase1] 运行异常：', (e && e.stack) || e);
+    phase1Fail = 1;
+  }
+  const totalPass = pass + phase1Pass, totalFail = fail + phase1Fail;
+  console.log(`\n==== 总计：通过 ${totalPass} / 失败 ${totalFail} ====`);
+  process.exit(totalFail ? 1 : 0);
+})();

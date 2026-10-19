@@ -525,8 +525,42 @@ function saveAlarm(){
   toast('已保存闹钟 ✓'); $('saveHint').textContent='下次响铃：'+fmtNext(computeNextTrigger(item));
   syncAlarmToServer('add',item);
 }
-function toggle(id){ const a=alarms.find(x=>x.id===id); if(a){ a.enabled=!a.enabled; save(); renderList(); } }
+function toggle(id){ const a=alarms.find(x=>x.id===id); if(a){ a.enabled=!a.enabled; save(); renderList(); setLegacyEnabled(a); } }
 function del(id){ const item=alarms.find(x=>x.id===id); alarms=alarms.filter(x=>x.id!==id); editingId=null; save(); renderList(); toast('已删除'); if(item) syncAlarmToServer('remove',item); }
+
+// ---- F1：单闹钟启停同步（乐观更新 + 离线队列 + 失败回滚）----
+// 注意：本段绝不触碰 syncedIds / resyncAllToServer / healPushRegistration（推送修复核心 1ed0dd4）
+let pendingEnabled = JSON.parse(localStorage.getItem('alarm_agent_pending_enabled')||'[]');
+function queueEnabled(a){
+  pendingEnabled = pendingEnabled.filter(x=>x.id!==a.id);   // 按 id 去重（覆盖同 id 的最新状态）
+  pendingEnabled.push({ id:a.id, enabled:a.enabled });
+  localStorage.setItem('alarm_agent_pending_enabled', JSON.stringify(pendingEnabled));
+}
+async function flushEnabledQueue(){
+  const items = pendingEnabled.slice();
+  const done = [];
+  for(const x of items){
+    const a = alarms.find(y=>y.id===x.id);
+    if(!a){ done.push(x.id); continue; }   // 本地已删除 → 视为已处理
+    const ok = await setLegacyEnabled(a);
+    if(ok) done.push(x.id);                 // 成功才移出队列（filter 重建并写回）
+  }
+  pendingEnabled = pendingEnabled.filter(x=>!done.includes(x.id));
+  localStorage.setItem('alarm_agent_pending_enabled', JSON.stringify(pendingEnabled));
+}
+async function setLegacyEnabled(a){
+  if(!clientId) return false;                       // 服务端本无此 legacy 行（本地创建），静默跳过
+  if(!navigator.onLine){ queueEnabled(a); return false; }   // 离线：先入队，联网后冲刷
+  try{
+    const res = await fetch('/api/alarm/update',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:a.id,enabled:a.enabled})});
+    if(!res.ok) throw new Error('sync_failed');     // 关键修正：404/500 等非 2xx 不得被静默吞掉
+    return true;
+  }catch(e){
+    a.enabled=!a.enabled; save(); renderList(); toast('同步失败，已回滚');   // 失败回滚（网络异常/非 2xx 均触发）
+    return false;
+  }
+}
+window.addEventListener('online', flushEnabledQueue);
 
 let audioCtx=null;
 function ensureAudio(){ if(!audioCtx){ try{ audioCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(audioCtx&&audioCtx.state==='suspended') audioCtx.resume(); }
@@ -596,6 +630,12 @@ async function fetchVapidPublic(){
   return vapidPublic;
 }
 // 建立/恢复云端推送：旧订阅与当前 VAPID 密钥不匹配时自动换新；注册对相同订阅幂等
+// E1：无条件注册 Service Worker（离线/PWA 优先，与推送能力解耦；不要求 PushManager 支持）
+async function initSW(){
+  if(!('serviceWorker' in navigator)) return;
+  try{ swReg = await navigator.serviceWorker.register('sw.js'); }
+  catch(e){ console.warn('[sw] 注册失败', e.message); }
+}
 async function healPushRegistration(){
   try{
     if(!swReg){ swReg=await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready; }
@@ -611,9 +651,10 @@ async function healPushRegistration(){
   }catch(e){ console.error(e); pushActive = false; setPushStatus('未开启'); return false; }
 }
 async function initPush(){
+  await initSW();   // E1：load 时无条件确保 SW 已注册（离线/PWA 优先，即使无 PushManager 也注册）
   if(!('serviceWorker' in navigator) || !('PushManager' in window)){ setPushStatus('浏览器不支持'); return; }
   try{
-    swReg=await navigator.serviceWorker.register('sw.js');
+    if(!swReg) swReg=await navigator.serviceWorker.register('sw.js');   // register 幂等，安全
     await navigator.serviceWorker.ready;
     const existing=await swReg.pushManager.getSubscription();
     if(!existing){ pushActive=false; setPushStatus('未开启'); return; }
