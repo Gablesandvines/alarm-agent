@@ -147,6 +147,19 @@ CREATE TABLE IF NOT EXISTS metrics (
   value REAL NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS fire_log (
+  id TEXT PRIMARY KEY,
+  alarm_id TEXT,
+  client_id TEXT,
+  tenant TEXT,
+  kind TEXT NOT NULL,
+  label TEXT,
+  time TEXT,
+  timezone TEXT,
+  fired_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fire_log_fired_at ON fire_log(fired_at);
+CREATE INDEX IF NOT EXISTS idx_fire_log_client ON fire_log(client_id, fired_at);
 `);
 
 // 旧版以明文 key 为主键的库，迁移为哈希存储（key_hash + 加密 key_enc）
@@ -339,6 +352,31 @@ function setLegacyAlarmEnabled(clientId, id, enabled) {
   const r = db.prepare('UPDATE legacy_alarms SET enabled = ? WHERE client_id = ? AND id = ?')
     .run(enabled ? 1 : 0, clientId, id);
   return r.changes > 0;
+}
+
+// ---------- 触发历史 fire_log（F6：今日/历史视图的服务端审计） ----------
+// 仅「服务端参与触发」的事件入库（ring/snooze/missed）；纯离线本地触发不入库（今日视图给只读提示）。
+// kind: 'ring' | 'snooze' | 'missed'；fired_at 为 epoch ms，便于 [from,to) 半开范围与排序。
+function logFire({ alarm_id, client_id, tenant, kind, label, time, timezone, fired_at }) {
+  const id = 'fl_' + crypto.randomBytes(9).toString('hex');
+  db.prepare('INSERT INTO fire_log (id, alarm_id, client_id, tenant, kind, label, time, timezone, fired_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(id, alarm_id || null, client_id || null, tenant || null, kind, label || '', time || null, timezone || null, fired_at || Date.now());
+  return id;
+}
+function listFireLog({ clientId, from, to, limit }) {
+  let sql = 'SELECT * FROM fire_log WHERE client_id = ?';
+  const params = [clientId];
+  if (from != null) { sql += ' AND fired_at >= ?'; params.push(from); }
+  if (to != null) { sql += ' AND fired_at < ?'; params.push(to); }   // 半开区间 [from,to)
+  sql += ' ORDER BY fired_at ASC';
+  if (limit) { sql += ' LIMIT ?'; params.push(limit); }
+  return db.prepare(sql).all(...params).map(r => ({
+    id: r.id, alarm_id: r.alarm_id, client_id: r.client_id, tenant: r.tenant, kind: r.kind,
+    label: r.label, time: r.time, timezone: r.timezone, fired_at: r.fired_at
+  }));
+}
+function pruneFireLog(beforeMs) {
+  return db.prepare('DELETE FROM fire_log WHERE fired_at < ?').run(beforeMs).changes;
 }
 
 // ---------- 待投递队列（Webhook 持久化，支持崩溃恢复） ----------
@@ -566,5 +604,6 @@ module.exports = {
   getUsage, bumpUsage,
   checkRateLimit, pruneStaleRateEvents, incrMetric, getMetrics,
   enqueueDelivery, getDueDeliveries, claimDelivery, recoverStuckDeliveries, pruneDeliveries, markDeliverySuccess, markDeliveryRetry,
-  listSubs, addSub, deleteSub, listLegacyAlarms, saveLegacyAlarm, deleteLegacyAlarm, setLegacyAlarmEnabled
+  listSubs, addSub, deleteSub, listLegacyAlarms, saveLegacyAlarm, deleteLegacyAlarm, setLegacyAlarmEnabled,
+  logFire, listFireLog, pruneFireLog
 };

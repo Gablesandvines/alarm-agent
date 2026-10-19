@@ -214,7 +214,19 @@ if (fail > 0) {
     console.error('[phase1] 运行异常：', (e && e.stack) || e);
     phase1Fail = 1;
   }
-  const totalPass = pass + phase1Pass, totalFail = fail + phase1Fail;
+
+  // 第二阶段（F3 / F6 / I3）回归：独立 server 子进程 + 隔离单元库
+  let phase2Pass = 0, phase2Fail = 0;
+  try {
+    const phase2 = require('./phase2.js');
+    const r2 = await phase2.run();
+    phase2Pass = r2.pass; phase2Fail = r2.fail;
+  } catch (e) {
+    console.error('[phase2] 运行异常：', (e && e.stack) || e);
+    phase2Fail = 1;
+  }
+
+  const totalPass = pass + phase1Pass + phase2Pass, totalFail = fail + phase1Fail + phase2Fail;
   console.log(`\n==== 总计：通过 ${totalPass} / 失败 ${totalFail} ====`);
   process.exit(totalFail ? 1 : 0);
 })();

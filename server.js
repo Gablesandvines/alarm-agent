@@ -259,6 +259,9 @@ setInterval(async () => {
 // 定期清理过期记录：限流（1 分钟窗口）+ 终态投递（7 天保留期），防止表无限膨胀
 setInterval(() => { try { db.pruneStaleRateEvents(Date.now() - RATE_WINDOW_MS); } catch (e) {} }, 60000);
 setInterval(() => { try { const n = db.pruneDeliveries(Date.now() - DELIVERY_PRUNE_MS); if (n > 0) log('info', 'delivery_pruned', { count: n }); } catch (e) {} }, 3600 * 1000);
+// F6：fire_log 保留期清理（默认 30 天，ALARM_FIRELOG_RETENTION_DAYS 可覆盖），每 6 小时一次，防表膨胀
+const FIRELOG_RETENTION_MS = (Number(process.env.ALARM_FIRELOG_RETENTION_DAYS) || 30) * 86400000;
+setInterval(() => { try { const n = db.pruneFireLog(Date.now() - FIRELOG_RETENTION_MS); if (n > 0) log('info', 'firelog_pruned', { count: n }); } catch (e) {} }, 6 * 3600 * 1000);
 function verifyWebhook(apiKey, url) {
   const body = JSON.stringify({ event: 'webhook.test', challenge: crypto.randomBytes(8).toString('hex'), message: 'Alarm Agent webhook 连通性测试' });
   const sig = apiKey ? crypto.createHmac('sha256', apiKey).update(body).digest('hex') : '';
@@ -592,9 +595,18 @@ async function handleApi(req, res) {
         subscription: sub ? sub.subscription : body.subscription,
         timestamp: body.timestamp, time: body.time, recurrence: body.recurrence || 'none',
         label: body.label || '', lead_minutes: body.lead_minutes || 0, timezone: tz,
-        end: body.end || null, fired: false, enabled: body.enabled !== false, fired_count: body.fired_count || 0, nextTrigger: (body.timestamp || 0) * 1000
+        end: body.end || null, fired: false, enabled: body.enabled !== false, fired_count: body.fired_count || 0, nextTrigger: (body.timestamp || 0) * 1000,
+        kind: body.kind || null, parentId: body.parentId || null
       };
       db.saveLegacyAlarm(alarm);
+      // F3（贪睡服务端化）：kind=snooze 时写一条 snooze 审计（alarm_id=parentId，供今日视图「贪睡 +1」计数）
+      if (body.kind === 'snooze') {
+        db.logFire({
+          alarm_id: body.parentId || (body.id || '').replace(/^snz_/, ''),
+          client_id: body.clientId, kind: 'snooze',
+          label: alarm.label, time: body.time, timezone: tz, fired_at: Date.now()
+        });
+      }
       console.log('[alarm] 已登记', alarm.id, alarm.time, alarm.recurrence);
       return sendJSON(res, { ok: true, id: alarm.id });
     }
@@ -610,6 +622,16 @@ async function handleApi(req, res) {
       const ok = db.setLegacyAlarmEnabled(body.clientId, body.id, enabled);
       if (!ok) return appError(res, 'not_found', 'alarm not found', 404);
       return sendJSON(res, { ok: true, enabled });
+    }
+    // F6a：触发历史查询（今日/历史视图）。沿用本段 App Key 门控；clientId 必填（防越权），from/to 可选半开 [from,to)
+    if (url === '/api/firelog' && req.method === 'GET') {
+      const q = new URL(req.url, 'http://localhost').searchParams;
+      const clientId = (q.get('clientId') || '').trim();
+      if (!clientId) return appError(res, 'bad_request', 'missing clientId', 400);
+      const parseMs = v => { if (v == null || v === '') return null; const n = Number(v); if (isFinite(n)) return n; const d = Date.parse(v); return isNaN(d) ? null : d; };
+      const from = parseMs(q.get('from')), to = parseMs(q.get('to'));
+      const logs = db.listFireLog({ clientId, from, to, limit: 500 });
+      return sendJSON(res, { clientId, count: logs.length, logs });
     }
     if (url === '/api/parse' && req.method === 'POST') {
       // 全局限流：/api/parse 不经过平台按 key 配额，需独立限流防止被白嫖刷量
@@ -673,6 +695,8 @@ setInterval(() => {
         const ended = base == null || endExceeded({ time: a.time, recurrence: a.recurrence, timestamp: a.timestamp, end: a.end, lead_minutes: a.lead_minutes }, base, tz);
         a.fired = ended; a.nextTrigger = ended ? 0 : base - (a.lead_minutes || 0) * 60000;
       }
+      // F6：错过（超出 MISS_GRACE）写 missed 审计（本分支以 continue 结束 → 与下方 ring 天然互斥）
+      db.logFire({ alarm_id: a.id, client_id: a.clientId, kind: 'missed', label: a.label, time: a.time, timezone: tz, fired_at: now });
       db.saveLegacyAlarm(a); continue;
     }
     // F2：双模型防御性去重——同 tick 内同签名（clientId|time|recurrence|label）只投递一次
@@ -693,6 +717,8 @@ setInterval(() => {
         // 无订阅（如服务端重建后 subs 为空、客户端尚未重注册）：不静默跳过，记警告便于排查；本地通知兜底
         console.warn('[push] 闹钟', a.id, '无可用订阅（clientId=' + a.clientId + '），跳过云端推送（仅本地兜底）');
       }
+      // F6：ring 审计（有订阅推送 / 无订阅应响 均写一行，覆盖「应响」语义；snz_ 行 → alarm_id 形如 snz_xxx，前端识别为「贪睡响铃」）
+      db.logFire({ alarm_id: a.id, client_id: a.clientId, kind: 'ring', label: a.label, time: a.time, timezone: tz, fired_at: now });
     }
     if (a.recurrence === 'none') a.fired = true;
     else {
@@ -720,6 +746,8 @@ setInterval(() => {
     else firedSig.add(sig);
     if (!dup) {
       if (wh && keyRec) enqueueWebhookDelivery(keyRec.key, wh, a, now);
+      // F6：platform ring 审计（client_id 为空，不进 App 今日视图，仅审计/未来按 tenant 查询）
+      db.logFire({ alarm_id: a.id, tenant: a.tenant, kind: 'ring', label: al.label, time: al.time, timezone: al.timezone, fired_at: now });
     }
     if (keyRec) bumpUsage(keyRec.key, 'fire_count');
     if (al.recurrence === 'none') a.next_trigger = null;

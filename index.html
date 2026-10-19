@@ -160,6 +160,20 @@
     <div id="list"><div class="empty">还没有闹钟，先解析一句话试试。</div></div>
   </div>
 
+  <div class="card">
+    <div class="label" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span>今日触发（历史）</span>
+      <span style="margin-left:auto"></span>
+      <button class="small ghost" id="dayPrev">‹ 前一天</button>
+      <span id="dayLabel" style="font-weight:600;color:var(--ink);font-size:13px">今天</span>
+      <button class="small ghost" id="dayNext">后一天 ›</button>
+    </div>
+    <div id="todayStatus" style="font-size:12px;color:var(--sub);margin-bottom:6px"></div>
+    <div id="todayList"><div class="empty" style="font-size:13px">暂无触发记录（需开启云端推送后，服务端参与触发的事件才会入库）。</div></div>
+    <div class="label" style="margin-top:12px">下一次触发（最近 3 个）</div>
+    <div id="nextAgg" style="font-size:13px;color:var(--sub)"></div>
+  </div>
+
   <div class="foot">
     解析引擎 nlu.js（含 timestamp）｜本地存储 localStorage｜提醒=通知+铃声｜PWA 可安装。<br>
     可靠性：开启「云端推送」后由 node server.js 通过 Web Push 在浏览器关闭时也能提醒（需 localhost/HTTPS 托管）；未开启时本地调度兜底（页面存活内有效）。
@@ -184,7 +198,27 @@ let alarms=[];
 let currentParsed=null; let currentSource='rule';
 let pendingRaw=null, pendingOrigin=null, pendingContext=null;  // 多轮澄清：原始输入、首次意图、已理解的锚点(partial)
 let editingId=null;                                          // 内联编辑中的闹钟 id
-function load(){ try{ alarms=JSON.parse(localStorage.getItem(STORE))||[]; }catch(e){ alarms=[]; } }
+let ringingId=null;                                          // 正在响铃的闹钟 id（火触发登记，供「再睡9分钟」精确定位，替代按 time 文本匹配）
+// ---- F3：瞬态贪睡条目（snz_ 前缀）工具 —— 绝不修改原闹钟，仅新增独立条目 ----
+function isTransient(a){ return !!a && typeof a.id==='string' && a.id.indexOf('snz_')===0; }
+// 清理已停用或已过期（>2 分钟）的瞬态条目；被移除时 best-effort 删服务端行 + 出 syncedIds
+function pruneTransients(){
+  let changed=false;
+  const keep=[];
+  for(const a of alarms){
+    if(isTransient(a) && (!a.enabled || (a.timestamp&&a.timestamp*1000 < Date.now()-120000))){
+      syncAlarmToServer('remove', a); changed=true;
+    } else keep.push(a);
+  }
+  if(changed){ alarms=keep; save(); }
+}
+// 级联删除：删除原闹钟时同步移除其贪睡条目（本地 + 服务端）
+function removeSnooze(origId){
+  const sid='snz_'+origId;
+  const sn=alarms.find(x=>x.id===sid);
+  if(sn){ alarms=alarms.filter(x=>x.id!==sid); syncAlarmToServer('remove', sn); }
+}
+function load(){ try{ alarms=JSON.parse(localStorage.getItem(STORE))||[]; }catch(e){ alarms=[]; } pruneTransients(); }
 function save(){ localStorage.setItem(STORE, JSON.stringify(alarms)); }
 
 const pad=n=>String(n).padStart(2,'0');
@@ -232,6 +266,47 @@ function computeNextTrigger(a){
   if(a.recurrence==='weekend'){ let t=at(new Date()),g=0; while((![0,6].includes(new Date(t).getDay())||t<now)&&g<12){t+=86400000;g++;} return t-lead; }
   if(a.recurrence.startsWith('weekly:')){ const w=parseInt(a.recurrence.split(':')[1],10); let t=at(new Date()),g=0; while((new Date(t).getDay()!==w||t<now)&&g<12){t+=86400000;g++;} return t-lead; }
   return null;
+}
+// ---- I3：规则式冲突检测（复用 Scheduler.computeNext，纯前端、非阻塞、可降级）----
+const CONF_HORIZON_MS=90*86400000, CONF_MAX_N=60, CONF_EPS_MS=60000, CONF_MAX_ALARMS=200;
+// 采样某闹钟未来触发时刻（最多 cap 次 / horizonDays 天）；无 Scheduler 时静默返回 []
+function sampleOccurrences(a, horizonDays, cap){
+  const out=[];
+  if(typeof Scheduler==='undefined' || !Scheduler.computeNext) return out;   // 技术风险 #5：降级静默
+  const horizon=(horizonDays||90)*86400000;
+  const maxN=cap||60;
+  const tz=a.timezone||'Asia/Shanghai';
+  const now=Date.now();
+  if(a.recurrence==='none'){ if(a.timestamp){ const t=a.timestamp*1000; if(t>=now) out.push(t); } return out; }
+  const anchor=(a.timestamp||Math.floor(now/1000))*1000;
+  let cursor=now;
+  for(let i=0;i<maxN;i++){
+    let t; try{ t=Scheduler.computeNext(a.time, a.recurrence, anchor, tz, cursor); }catch(e){ break; }
+    if(t==null || t>now+horizon) break;
+    out.push(t); cursor=t+1;
+  }
+  return out;
+}
+// 检测候选闹钟与其它启用闹钟是否在 60s 内撞点；排除自身 id 与瞬态 snz_；扫表上限 200；异常静默
+function detectConflicts(candidate, excludeId){
+  try{
+    if(typeof Scheduler==='undefined') return [];                            // 降级
+    const cand=sampleOccurrences(candidate); if(!cand.length) return [];
+    const pool=alarms.filter(a=>!isTransient(a)&&a.enabled&&a.id!==excludeId&&a.id!==candidate.id);
+    const list=pool.slice(0,CONF_MAX_ALARMS);                                // 性能兜底
+    const res=[];
+    for(const a of list){
+      const smp=sampleOccurrences(a);
+      let min=Infinity;
+      for(const t1 of cand) for(const t2 of smp){ const d=Math.abs(t1-t2); if(d<min) min=d; }
+      if(min<=CONF_EPS_MS) res.push({ id:a.id, label:a.label||a.time, minDiffMs:min });
+    }
+    return res;
+  }catch(e){ return []; }                                                    // 任何异常静默
+}
+// 非阻塞冲突提示：只在保存后 toast，绝不 return / 拦截保存
+function checkConflict(candidate, excludeId){
+  try{ const c=detectConflicts(candidate, excludeId); if(c.length) toast('⚠️ 与「'+c[0].label+'」时间相近（<1分钟），已照常保存'); }catch(e){}
 }
 function fmtNext(ms){
   if(ms==null) return '已过期';
@@ -313,10 +388,11 @@ function renderPreview(){
   }
 }
 function renderList(){
-  const list=$('list'); $('cnt').textContent=alarms.length;
-  if(!alarms.length){ list.innerHTML='<div class="empty">还没有闹钟，先解析一句话试试。</div>'; return; }
+  const list=$('list'); const realCount=alarms.filter(a=>!isTransient(a)).length; $('cnt').textContent=realCount;
+  if(!realCount){ list.innerHTML='<div class="empty">还没有闹钟，先解析一句话试试。</div>'; return; }
   list.innerHTML='';
   alarms.forEach(a=>{
+    if(isTransient(a)) return;                                 // 瞬态贪睡条目不进主列表
     if(a.id===editingId){ list.appendChild(buildEditRow(a)); return; }
     const nt=computeNextTrigger(a);
     const div=document.createElement('div');
@@ -401,6 +477,7 @@ function commitEdit(id){
   save(); editingId=null; renderList();
   syncAlarmToServer('remove', oldSnap);
   syncAlarmToServer('add', a);
+  checkConflict(a, a.id);                          // I3：非阻塞冲突提示（不拦截保存）
 }
 
 /* ===================== 对话式意图执行（取消 / 修改 / 查询） ===================== */
@@ -438,6 +515,7 @@ function applyIntentMatch(match, action, update){
         a.timestamp=Math.floor(d.getTime()/1000);
       }
       syncAlarmToServer('remove',old); syncAlarmToServer('add',a);
+      checkConflict(a, a.id);                      // I3：非阻塞冲突提示（不拦截修改）
     });
     save(); renderList();
   }
@@ -524,9 +602,10 @@ function saveAlarm(){
   alarms.unshift(item); save(); renderList();
   toast('已保存闹钟 ✓'); $('saveHint').textContent='下次响铃：'+fmtNext(computeNextTrigger(item));
   syncAlarmToServer('add',item);
+  checkConflict(item, item.id);                    // I3：非阻塞冲突提示（不拦截保存）
 }
 function toggle(id){ const a=alarms.find(x=>x.id===id); if(a){ a.enabled=!a.enabled; save(); renderList(); setLegacyEnabled(a); } }
-function del(id){ const item=alarms.find(x=>x.id===id); alarms=alarms.filter(x=>x.id!==id); editingId=null; save(); renderList(); toast('已删除'); if(item) syncAlarmToServer('remove',item); }
+function del(id){ const item=alarms.find(x=>x.id===id); alarms=alarms.filter(x=>x.id!==id); editingId=null; removeSnooze(id); save(); renderList(); toast('已删除'); if(item) syncAlarmToServer('remove',item); renderToday(); }
 
 // ---- F1：单闹钟启停同步（乐观更新 + 离线队列 + 失败回滚）----
 // 注意：本段绝不触碰 syncedIds / resyncAllToServer / healPushRegistration（推送修复核心 1ed0dd4）
@@ -582,6 +661,7 @@ function notify(a){
   }
 }
 function fire(a){
+  ringingId=a.id;                                            // 登记正在响铃的 id（贪睡定位用）
   playRing(); notify(a);
   $('ringTime').textContent=a.time; $('ringLab').textContent=a.label||'时间到';
   $('ringbox').classList.add('show');
@@ -590,10 +670,69 @@ function fire(a){
     a.fired_count=(a.fired_count||0)+1;
     if(a.fired_count>=a.end.count){ a.enabled=false; save(); }
   }
-  renderList();
+  renderList(); renderToday();                             // F6b：触发后刷新今日视图
 }
-$('ringStop').onclick=()=>{ $('ringbox').classList.remove('show'); };
-$('ringSnooze').onclick=()=>{ $('ringbox').classList.remove('show'); const a=alarms.find(x=>x.time===$('ringTime').textContent); if(a){ const nt=Date.now()+9*60000; a.timestamp=Math.floor(nt/1000); a.recurrence='none'; a.date=new Date(nt).toISOString().slice(0,10); a.enabled=true; save(); renderList(); toast('已贪睡 9 分钟'); } };
+$('ringStop').onclick=()=>{ $('ringbox').classList.remove('show'); pruneTransients(); renderList(); };
+// F3：再睡9分钟 —— 新建独立瞬态条目 snz_原id（绝不修改原闹钟的任何字段）；再贪睡复用同 id 覆盖，不堆积
+$('ringSnooze').onclick=()=>{
+  const rid=ringingId;                                        // 先捕获正在响铃的 id
+  $('ringbox').classList.remove('show');
+  if(!rid) return;
+  const base=alarms.find(x=>x.id===rid);
+  const parentId = rid.indexOf('snz_')===0 ? rid.slice(4) : rid;   // 贪睡再贪睡：父级归一为原闹钟 id
+  const sid='snz_'+parentId;                                       // 复用同 id → 不堆积 legacy 行
+  const tz=(base&&base.timezone)||getUserTz();
+  const targetMs=Date.now()+9*60000;
+  const parts=(typeof Scheduler!=='undefined'&&Scheduler.tzDateParts)
+    ? Scheduler.tzDateParts(targetMs,tz)
+    : {y:new Date(targetMs).getFullYear(),mo:new Date(targetMs).getMonth()+1,d:new Date(targetMs).getDate()};
+  const hm=(typeof Scheduler!=='undefined'&&Scheduler.wallClockAt)
+    ? Scheduler.wallClockAt(targetMs,tz)
+    : `${pad(new Date(targetMs).getHours())}:${pad(new Date(targetMs).getMinutes())}`;
+  const existing=alarms.find(x=>x.id===sid);
+  const snooze=existing||{id:sid};
+  Object.assign(snooze,{
+    raw:(base&&base.raw)||snooze.raw, timestamp:Math.floor(targetMs/1000),
+    datetime:null, date:`${parts.y}-${pad(parts.mo)}-${pad(parts.d)}`,
+    time:hm, recurrence:'none', timezone:tz,
+    label:(base&&base.label)||'', lead_minutes:0, end:null, fired_count:0,
+    enabled:true, kind:'snooze', parentId, createdAt:Date.now()
+  });
+  if(!existing) alarms.push(snooze);                         // 进 alarms[] 供本地 tick() 触发
+  save(); renderList();
+  toast('已贪睡 9 分钟');
+  snoozeToServer(snooze);                                    // 落库 + fire_log(snooze) + 离线队列
+  renderToday();                                             // F6b：贪睡后刷新今日视图
+};
+// 贪睡同步：在线+已开启云端推送才推服务端（成功→syncedIds 含 → 云端可靠；否则本地必响）；离线入队、联网冲刷
+let pendingSnooze = JSON.parse(localStorage.getItem('alarm_agent_pending_snooze')||'[]');
+function queueSnooze(item){
+  pendingSnooze = pendingSnooze.filter(x=>x.id!==item.id);   // 按 id 去重（同 snz_ id 覆盖）
+  pendingSnooze.push(Object.assign({}, item));               // 快照入队
+  localStorage.setItem('alarm_agent_pending_snooze', JSON.stringify(pendingSnooze));
+}
+async function flushSnoozeQueue(){
+  if(!pushActive || !clientId || !navigator.onLine) return;
+  const items=pendingSnooze.slice(); const done=[];
+  for(const it of items){
+    const a=alarms.find(y=>y.id===it.id);
+    if(!a || !a.enabled){ done.push(it.id); continue; }       // 已删除/已响过 → 不再重推
+    await syncAlarmToServer('add', a);
+    if(syncedIds.has(a.id)) done.push(it.id);
+  }
+  pendingSnooze = pendingSnooze.filter(x=>!done.includes(x.id));
+  localStorage.setItem('alarm_agent_pending_snooze', JSON.stringify(pendingSnooze));
+}
+async function snoozeToServer(item){
+  if(pushActive && clientId && navigator.onLine){
+    await syncAlarmToServer('add', item);
+    if(syncedIds.has(item.id)) return;                       // 已确认同步 → 云端通道可靠
+  }
+  // 离线/无推送/同步失败：保留本地定时（notify 必响）+ 入队重试（不做销毁式回滚）
+  queueSnooze(item);
+  if(navigator.onLine && pushActive) toast('贪睡已本地生效，联网后同步');
+}
+window.addEventListener('online', flushSnoozeQueue);
 
 function tick(){ const now=Date.now(); alarms.forEach(a=>{ if(a.enabled){ const nt=computeNextTrigger(a); if(nt&&nt<=now) fire(a); } }); }
 setInterval(tick,1000);
@@ -699,7 +838,7 @@ async function syncAlarmToServer(action,item){
   if(!pushActive||!clientId){ syncedIds.delete(item.id); return; }
   try{
     if(action==='add'){
-      await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0,end:item.end||null,fired_count:item.fired_count||0,timezone:item.timezone||getUserTz()})});
+      await fetch('/api/alarm',{method:'POST',headers:appHeaders(),body:JSON.stringify({clientId,id:item.id,timestamp:item.timestamp,time:item.time,recurrence:item.recurrence,label:item.label,lead_minutes:item.lead_minutes||0,end:item.end||null,fired_count:item.fired_count||0,timezone:item.timezone||getUserTz(),kind:item.kind||undefined,parentId:item.parentId||undefined})});
       syncedIds.add(item.id);
     }
     else if(action==='remove'){
@@ -739,7 +878,78 @@ if ($('tzSearch')) {
   fillTzOptions(''); refreshTzUI();
 }
 
-load(); renderList(); refreshPerm(); doParse();
+// ---- F6b：今日/历史视图（服务端 fire_log 审计 + 下次触发聚合 + 离线只读）----
+let todayOffset=0;   // 0=今天，-1=前一天，1=后一天
+const KIND_META={ ring:{cls:'rec',txt:'响铃'}, snooze:{cls:'',txt:'贪睡'}, missed:{cls:'no',txt:'错过'} };
+function fmtHM(ms){ const d=new Date(ms); return pad(d.getHours())+':'+pad(d.getMinutes()); }
+async function renderToday(){
+  try{
+    const listEl=$('todayList'), labelEl=$('dayLabel'), statusEl=$('todayStatus'), aggEl=$('nextAgg');
+    if(!listEl) return;
+    const tz=getUserTz();
+    let y,mo,d;
+    if(typeof Scheduler!=='undefined' && Scheduler.tzDateParts){
+      const base=Scheduler.tzDateParts(Date.now(), tz);
+      const s=(Scheduler.addDays? Scheduler.addDays(base.y,base.mo,base.d,todayOffset): base);
+      y=s.y; mo=s.mo; d=s.d;
+    } else {
+      const t=new Date(Date.now()+todayOffset*86400000); y=t.getFullYear(); mo=t.getMonth()+1; d=t.getDate();
+    }
+    const from=(typeof Scheduler!=='undefined'&&Scheduler.wallToEpoch)?Scheduler.wallToEpoch(y,mo,d,0,0,tz):Date.now();
+    let ny=y,nm=mo,nd=d+1;
+    if(typeof Scheduler!=='undefined'&&Scheduler.addDays){ const nx=Scheduler.addDays(y,mo,d,1); ny=nx.y; nm=nx.mo; nd=nx.d; }
+    const to=(typeof Scheduler!=='undefined'&&Scheduler.wallToEpoch)?Scheduler.wallToEpoch(ny,nm,nd,0,0,tz):Date.now()+86400000;
+    const tgl=todayOffset===0?'今天':todayOffset===-1?'昨天':todayOffset===1?'明天':(mo+'/'+d);
+    if(labelEl) labelEl.textContent=tgl+'（'+y+'-'+pad(mo)+'-'+pad(d)+'）';
+
+    // 下次触发聚合（本地启用、非瞬态）：最近 3 个
+    if(aggEl){
+      const now=Date.now();
+      const upcoming=alarms.filter(a=>!isTransient(a)&&a.enabled)
+        .map(a=>({a,nt:computeNextTrigger(a)})).filter(x=>x.nt!=null&&x.nt>=now)
+        .sort((p,q)=>p.nt-q.nt).slice(0,3);
+      aggEl.innerHTML=upcoming.length
+        ? upcoming.map(x=>'<div style="padding:2px 0">· '+fmtNext(x.nt)+' — '+(x.a.label||x.a.time)+'</div>').join('')
+        : '<div style="padding:2px 0">暂无启用中的闹钟。</div>';
+    }
+
+    // 离线 / 未开启推送：只读提示（历史记录仅服务端参与触发时入库）
+    if(!navigator.onLine){ if(statusEl) statusEl.textContent='离线：历史记录需联网查看（仅展示本地下次触发）'; return; }
+    if(!clientId){ if(statusEl) statusEl.textContent='未开启云端推送：历史记录由服务端记录，开启后可见。'; listEl.innerHTML='<div class="empty" style="font-size:13px">暂无触发记录。</div>'; return; }
+
+    // 拉取 fire_log（用户时区 [from,to) 半开）
+    let logs=[];
+    try{
+      const r=await fetch('/api/firelog?clientId='+encodeURIComponent(clientId)+'&from='+from+'&to='+to);
+      if(r.ok){ const j=await r.json(); logs=Array.isArray(j.logs)?j.logs:[]; }
+      if(statusEl) statusEl.textContent='';
+    }catch(e){ if(statusEl) statusEl.textContent='离线：历史记录需联网查看（仅展示本地下次触发）'; return; }
+
+    // 计数口径（§2.6）：snoozeCount=snooze 行；ringCount=ring 且非 snz_；snoozeRing=ring 且 snz_（单列不重复计入前两者）
+    let snoozeCount=0, ringCount=0, snoozeRing=0, missedCount=0;
+    logs.forEach(l=>{
+      if(l.kind==='snooze') snoozeCount++;
+      else if(l.kind==='ring'){ if((l.alarm_id||'').indexOf('snz_')===0) snoozeRing++; else ringCount++; }
+      else if(l.kind==='missed') missedCount++;
+    });
+    if(statusEl) statusEl.textContent='响铃 '+ringCount+' · 贪睡 '+snoozeCount+' · 贪睡响铃 '+snoozeRing+' · 错过 '+missedCount;
+
+    if(!logs.length){ listEl.innerHTML='<div class="empty" style="font-size:13px">当日暂无触发记录。</div>'; return; }
+    listEl.innerHTML=logs.map(l=>{
+      const isSnoozeRing=(l.kind==='ring'&&(l.alarm_id||'').indexOf('snz_')===0);
+      const meta=KIND_META[l.kind]||{cls:'',txt:l.kind};
+      const txt=isSnoozeRing?'贪睡响铃':meta.txt;
+      const cls=isSnoozeRing?'rec':meta.cls;
+      return '<div class="item" style="padding:8px 2px;border-bottom:1px dashed var(--line)">'
+        +'<div class="t" style="font-size:14px;min-width:52px">'+(l.time||fmtHM(l.fired_at))+'</div>'
+        +'<div class="meta"><div class="lab" style="font-size:14px">'+(l.label||'（无备注）')+' <span class="pill '+cls+'">'+txt+'</span></div></div></div>';
+    }).join('');
+  }catch(e){ /* 静默：历史视图不影响主流程 */ }
+}
+if($('dayPrev')) $('dayPrev').onclick=()=>{ todayOffset--; renderToday(); };
+if($('dayNext')) $('dayNext').onclick=()=>{ todayOffset++; renderToday(); };
+
+load(); renderList(); refreshPerm(); doParse(); renderToday();
 </script>
 </body>
 </html>
