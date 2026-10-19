@@ -101,7 +101,10 @@ function renderExpected(exp) {
 // 句中是否出现「钟点词」——决定 MISSED 是否成立
 const CLOCK_WORD_RE = /[点时]|半|刻|分钟|[0-9]{1,2}[:：][0-9]{1,2}/;
 // 相对时长表达（「8分钟后」「半小时以后」）：这类句子可比的不是墙钟，而是「距基准过去了多久」
-const REL_DURATION_RE = /(?:半|[一二两三四五六七八九十]|\d+)\s*(?:秒钟|秒|分钟|分|小时|个?小时|钟头)\s*(?:后|之后|以后)/;
+const REL_DURATION_RE = new RegExp(
+  '(?:再过|过了|经过)\\s*(?:半|[一二两三四五六七八九十]|\\d+)\\s*(?:秒钟|秒|分钟|分|小时|个?小时|钟头)'
+  + '|(?:半|[一二两三四五六七八九十]|\\d+)\\s*(?:秒钟|秒|分钟|分|小时|个?小时|钟头)\\s*(?:后|之后|以后|内|以内)'
+);
 // 量词/副词「点」的高风险搭配：命中即列为 SUSPECT 人工复核（与 nlu.js 的过滤词典同源，但此处独立实现，
 // 以免「测试跟着实现走」把漏网的误报也判成没问题）
 const SUSPECT_RE = /(?:快|慢|早|晚|多|少|好|差|有|稍)\s*一?\s*点|一点点|一点(?:都|也|不|没)|(?:[几一二两三四五六七八九十]|\d{1,2})\s*点\s*(?:意见|建议|想法|要求|希望|问题|内容|事项|说明|看法|观点|理由|原因|补充|原则|会|事|东西)/;
@@ -347,26 +350,44 @@ function knownIssuesSection(result) {
   const L = [];
   L.push('## 六、已知残留与下一步');
   L.push('');
-  L.push('本轮（第一阶段）**有意保留**、留待后续处理的项——不是新发现的 bug：');
+  L.push('### 6.1 有意保留：裸小数仍会误报（' + b.SUSPECT.length + ' 条）');
   L.push('');
-  L.push('1. **裸小数仍会误报**（' + (q(b.SUSPECT) || '本轮无') + '，共 ' + b.SUSPECT.length + ' 条）。');
-  L.push('   原因：`零点` 本身是合法时刻（「零点准时抢」→ 00:00），仅凭「点后跟单个数字」无法区分 0.5 与 0:05，硬加规则会误杀真时刻。');
-  L.push('   已覆盖的部分：带单位或算术语境的写法（`调高24点5度`、`减八点八`、`升高10点五度`、`一点都不好玩`）已全部掩蔽。');
-  const relDiff = b.DIFF.filter(function (r) { return /^相对时长/.test(r.reason); });
-  const midDiff = b.DIFF.filter(function (r) { return /^墙钟/.test(r.reason) && /中午|正午/.test(r.query); });
-  L.push('2. **相对时长的复合写法**仍缺（' + (q(relDiff) || '本轮无') + '，共 ' + relDiff.length + ' 条）：');
-  L.push('   `再过十分钟`（无「后」字）、`2小时18分钟以后`（复合时长）、`一个半小时后`（倍数时长）——当前只识别最后一个「N分钟/小时 + 后」。');
-  L.push('3. **时段词「中午」未做 +12 校正**（' + (q(midDiff) || '本轮无') + '）：`中午一点` 得到 01:00，期望 13:00。');
-  L.push('   `下午/晚上/夜里` 已做 +12，`中午` 只处理了 12 点整；需按「中午 1~3 点 → +12」收口（会影响 `中午11点` 这类），故本轮不动。');
-  L.push('4. **无分隔符钟点**未支持：`明天早上0900`、`7月19号830`（口语常见，建议按「3~4 位数字 HHMM」收口）。');
-  L.push('5. **「过 / 差」表达**未支持：`十点过六分`（10:06）、`十点差五分`（09:55）。');
-  L.push('6. **语料结构限制**：' + s.total + ' 条中 ' + b.OUT_OF_SCOPE.length
-    + ' 条为「日期粒度区间 / 多候选 / 纯日期 / 世纪 / 无标注」（如「这周」「周五去北京的机票」），与闹钟场景不同构。');
-  L.push('   可做严格比较的样本仅 ' + (s.absCompared + s.relCompared) + ' 条（绝对钟点 ' + s.absCompared
+  L.push(b.SUSPECT.length ? b.SUSPECT.map(function (r) {
+    return '· `' + r.query + '` → ' + (r.ourDate + ' ' + r.ourTime);
+  }).join('\n') : '_无_');
+  L.push('');
+  L.push('为什么本轮不修：`零点` 本身是合法时刻（「零点准时抢」→ 00:00），仅凭「点后跟单个数字」');
+  L.push('无法区分 0.5 与 0:05，硬加规则会误杀真时刻，需要「点后跟量词/单位」这类更强的上下文信号。');
+  L.push('带单位或算术语境的写法（`调高24点5度`、`减八点八`、`升高10点五度`、`一点都不好玩`）已全部掩蔽，不会误报。');
+  L.push('');
+  L.push('### 6.2 待补口径：本轮 DIFF 明细（' + b.DIFF.length + ' 条）');
+  L.push('');
+  if (!b.DIFF.length) {
+    L.push('_无_');
+  } else {
+    L.push('| query | 期望 | 我方 | 差异 |');
+    L.push('| --- | --- | --- | --- |');
+    b.DIFF.forEach(function (r) {
+      L.push('| ' + mdEscape(r.query) + ' | ' + mdEscape(r.expected) + ' | ' + (r.ourDate + ' ' + r.ourTime) + ' | ' + mdEscape(r.reason) + ' |');
+    });
+  }
+  L.push('');
+  L.push('### 6.3 不可比样本（' + b.NOT_COMPARABLE.length + ' 条）');
+  L.push('');
+  L.push('双方都给出了时刻，但公历日不同（多为「已过期顺延」与语料基准日不一致），无法直接比墙钟，仅供参考。');
+  L.push('');
+  L.push('### 6.4 语料结构限制');
+  L.push('');
+  L.push(s.total + ' 条中 ' + b.OUT_OF_SCOPE.length + ' 条为「日期粒度区间 / 多候选 / 纯日期 / 世纪 / 无标注」'
+    + '（如「这周」「周五去北京的机票」），与闹钟场景不同构。');
+  L.push('可做严格比较的样本仅 ' + (s.absCompared + s.relCompared) + ' 条（绝对钟点 ' + s.absCompared
     + ' + 相对时长 ' + s.relCompared + '），因此本报告只给覆盖与 badcase 清单，不给准确率——任何「准确率」对这张语料都会失真。');
   L.push('');
-  L.push('下一步建议顺序：先补 2（相对时长复合）与 3（中午校正）——这两项最贴近真实用户说法，改动也小；');
-  L.push('再补 4（无分隔符钟点）、5（过/差）；裸小数（1）需要更强的上下文信号，优先级最低。');
+  L.push('### 6.5 下一步建议');
+  L.push('');
+  L.push('1. 补「过 / 差」表达（`十点过六分`、`十点差五分`）——改动小、直击口语。');
+  L.push('2. 裸小数误报需要更强的上下文信号（后面跟量词/单位），优先级最低。');
+  L.push('3. 语料侧若要评价精度，需先把它改造成「闹钟语义」（+08 基准 + 单点钟点），本报告不背这个包袱。');
   L.push('');
   return L.join('\n');
 }
@@ -387,8 +408,8 @@ function conclusion(result) {
   const rate = (good * 100 / comparable).toFixed(0);
   return '在 ' + comparable + ' 条可做严格比较的样本（绝对钟点 ' + s.absCompared + ' 条按墙钟比、相对时长 '
     + s.relCompared + ' 条按 elapsed 比）中，' + good + ' 条一致（' + rate + '%）；'
-    + 'MISSED ' + b.MISSED.length + ' 条是下一轮补解析口径的优先输入，SUSPECT ' + b.SUSPECT.length
-    + ' 条需人工复核是否残留误报，DIFF ' + b.DIFF.length + ' 条已定位到具体说法。';
+    + (b.MISSED.length ? ('MISSED ' + b.MISSED.length + ' 条是下一轮补解析口径的优先输入；') : 'MISSED 已清零（该给时刻的句子都给出来了）；')
+    + 'SUSPECT ' + b.SUSPECT.length + ' 条需人工复核是否残留误报，DIFF ' + b.DIFF.length + ' 条已定位到具体说法。';
 }
 
 /* ---------------- 入口 ---------------- */

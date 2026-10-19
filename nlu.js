@@ -421,6 +421,57 @@
     return 0;
   }
 
+  /* ---------------- 无分隔钟点（0900 / 1830 / 830 / 930） ----------------
+   * 中文口语常把「9:00」说成「0900」、「8 点半」写成「830」。这类裸数字串与
+   * 数量/年份/金额同形，所以**必须**有上下文锚点才认，宁可漏判不可误判：
+   *   ① 只认 3 位 HMM（小时首位 1–9）与 4 位 HHMM（小时 00–23），分钟必须 00–59；
+   *   ② 数字串左侧不能紧邻数字，右侧不能紧跟量词（年/月/号/日/元/块/万…）；
+   *   ③ 4 位落在 1900–2099 一律按公历年份处理，不当时刻（「2025」「2015」不动）；
+   *   ④ 数字串前 8 个字内必须出现时间语境词（时段/日锚点/星期/年月日），否则不认。
+   * 时段校正（下午 830 → 20:30）仍由 correctHour 统一处理，本函数只负责切出 h/m。 */
+  const BARE_CLOCK_ANCHOR_SRC = '凌晨|拂晓|早上|早晨|上午|清早|中午|正午|下午|傍晚|黄昏|晚上|夜里|夜晚|深夜'
+    + '|今天|今日|明天|明早|明晨|明晚|后天|大后天|昨天|前天|次日'
+    + '|周[一二三四五六日天]|星期|礼拜'
+    + '|[\\d一二两三四五六七八九十]+\\s*月[\\d一二两三四五六七八九十]+\\s*[号日]'
+    + '|年|号|日';
+  const BARE_CLOCK_ANCHOR_RE = new RegExp('(?:' + BARE_CLOCK_ANCHOR_SRC + ')');
+  // 数字串后紧跟这些量词 → 是数量/金额/年份，不是钟点
+  const BARE_CLOCK_TAIL_RE = /^\s*(?:年|月|号|日|元|块|万|亿|人|个|岁|次|位|台|件|条|张|斤|米|吨|%|％|℃|度)/;
+  const BARE_CLOCK_RE = /(\d{3,4})(?!\d)/g;
+  const BARE_CLOCK_ANCHOR_WINDOW = 8;   // 向前回看的字数
+
+  /**
+   * 识别无分隔钟点（0900 / 1830 / 830 / 930）。
+   * @param {string} t 已掩蔽的文本
+   * @return {{hour:number, minute:number, consumed:string}|null}
+   */
+  function matchBareClock(t) {
+    if (!t) return null;
+    let m;
+    BARE_CLOCK_RE.lastIndex = 0;
+    while ((m = BARE_CLOCK_RE.exec(t))) {
+      const digits = m[1];
+      const start = m.index;
+      const end = start + digits.length;
+      // 左侧紧邻数字 → 只是长数字串的一截，跳过
+      if (start > 0 && /\d/.test(t.charAt(start - 1))) continue;
+      // 右侧紧跟量词 → 数量/年份
+      if (BARE_CLOCK_TAIL_RE.test(t.slice(end))) continue;
+      const hour = parseInt(digits.length === 3 ? digits.charAt(0) : digits.slice(0, 2), 10);
+      const minute = parseInt(digits.length === 3 ? digits.slice(1) : digits.slice(2), 10);
+      // 4 位落在 1900–2099 视为年份
+      if (digits.length === 4 && hour >= 19 && hour <= 20) continue;
+      if (hour > 23) continue;
+      if (digits.length === 3 && hour < 1) continue;
+      if (minute > 59) continue;
+      // 上下文锚点：前 8 字内必须有时间语境词
+      const before = t.slice(Math.max(0, start - BARE_CLOCK_ANCHOR_WINDOW), start);
+      if (!BARE_CLOCK_ANCHOR_RE.test(before)) continue;
+      return { hour: hour, minute: minute, consumed: digits };
+    }
+    return null;
+  }
+
   /**
    * 从文本中抽取一个时刻（先掩蔽非时刻词，再走统一时刻正则）。
    * @param {string} t 原始文本
@@ -439,7 +490,8 @@
       if (h < 0 || h > 24) return null;
       return { hour: (h === 24 ? 0 : h), minute: parseMinuteTail(m[2]), consumed: m[0] };
     }
-    return null;
+    // 兜底：无分隔钟点（显式的 «X点Y分» / «X:Y» 已经优先匹配完，不会走到这里）
+    return matchBareClock(src);
   }
 
   // 从文本中抽取一个时刻（与 create 路径同源：统一走 matchClock，避免两处正则漂移）

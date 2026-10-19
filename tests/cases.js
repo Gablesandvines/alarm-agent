@@ -283,4 +283,34 @@ module.exports = [
   // —— 超出覆盖年份：不猜，明确提示 ——
   { input: '2040年春节', now: NOW_A, expect: { success: false, needsClarification: true, clarifyType: 'out_of_range', dateResolved: null } },
   { input: '2023年春节', now: NOW_A, expect: { success: false, needsClarification: true, clarifyType: 'out_of_range', dateResolved: null } },
+
+  // ============================================================
+  // 遗留 1：无分隔钟点（0900 / 1830 / 830 / 930）
+  // 必须有上下文锚点（前 8 字内的时间语境词），且避开年份/金额/数量
+  // ============================================================
+
+  // —— 正例：4 位 HHMM ——
+  { input: '明天早上0900提醒我', now: NOW_A, expect: { success: true, time: '09:00', dateFixed: '2025-01-22' } },
+  { input: '明天早上0930提醒我', now: NOW_A, expect: { success: true, time: '09:30', dateFixed: '2025-01-22' } },
+  { input: '明天1230吃饭',       now: NOW_A, expect: { success: true, time: '12:30', dateFixed: '2025-01-22', labelIncludes: ['吃饭'] } },
+  { input: '明天1830下班',       now: NOW_A, expect: { success: true, time: '18:30', dateFixed: '2025-01-22', labelIncludes: ['下班'] } },
+  // —— 正例：3 位 HMM ——
+  { input: '明天早上930提醒我',  now: NOW_A, expect: { success: true, time: '09:30', dateFixed: '2025-01-22' } },
+  { input: '明天130提醒我',      now: NOW_A, expect: { success: true, time: '01:30', dateFixed: '2025-01-22' } },
+  // 日期锚点 + 无分隔钟点（「号」提供锚点，2018 是年份不是时刻）
+  { input: '2018年7月19号830开会', now: NOW_A, expect: { success: true, time: '08:30', dateFixed: '2018-07-19', labelIncludes: ['开会'] } },
+  // —— 时段校正照常生效 ——
+  { input: '下午830提醒我', now: NOW_A, expect: { success: true, time: '20:30', dateFixed: '2025-01-21' } },
+  { input: '晚上930提醒我', now: NOW_A, expect: { success: true, time: '21:30', dateFixed: '2025-01-21' } },
+
+  // —— 反例：不能误判成时刻 ——
+  // 4 位落在 1900–2099 → 年份
+  { input: '2015年提醒我', now: NOW_A, expect: { success: false, needsClarification: true } },
+  // 后接量词 → 金额/数量
+  { input: '价格1830元',   now: NOW_A, expect: { success: false, needsClarification: true } },
+  { input: '830万',        now: NOW_A, expect: { success: false, needsClarification: true } },
+  // 无上下文锚点
+  { input: '第830名',      now: NOW_A, expect: { success: false, needsClarification: true } },
+  // 小时越界（24xx 不识别）
+  { input: '明天2400提醒我', now: NOW_A, expect: { success: false, needsClarification: true } },
 ];
