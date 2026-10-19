@@ -139,23 +139,133 @@
   const pad2 = n => String(n).padStart(2, '0');
   const DAYOFF = { '今天': 0, '今日': 0, '明天': 1, '明早': 1, '明晨': 1, '明晚': 1, '后天': 2, '大后天': 3, '昨天': -1, '前天': -2 };
 
-  // 从文本中抽取一个时刻（与 create 路径的时刻正则同源，但只取首尾、不构造 target）
-  function matchTime(t) {
+  /* ---------------- P0 误报过滤：非时刻词掩蔽 ----------------
+   * 「两点意见」「快一点」「身份证4590…」「一日之计在于晨」「黎明主演的电影」这类文本里的
+   * 数词 + 点 / 日并不表示时刻，直接喂给时刻正则会误报 02:00 / 01:00。
+   * 做法：把可疑片段替换成等长占位符，得到「只保留可信时刻词」的文本，
+   * 下游时刻正则（matchClock）只吃这份文本；原文仍用于 label 与其它锚点，
+   * 因此占位符与原文同长，m[0] 依然能在原文中精确切出。
+   * 判定一律基于「相邻词搭配」而非「禁止某字」，保证合法时刻（两点开会 / 下午两点 /
+   * 十一点提醒我 / 一点钟）不受影响。 */
+  const MASK_CHAR = '\u3000';
+  // 「点」是量词时常跟的名词：两点意见 / 三点建议 / 一点补充
+  const QUANT_NOUN_SRC = '意见|建议|想法|要求|希望|问题|内容|事项|说明|看法|观点|理由|原因|补充|原则|体会|感受|经验|心得|计划|安排|步骤|方法|技巧|规则|做法|标准|好处|坏处|细节|教训|启示|总结|反思|情况|意思|收获|要点|重点|难点|需求|事情|东西';
+  // 「点」是量词时常出现的列举动词：再说两点 / 讲讲三点 / 提一点
+  // （刻意不含裸「说」，避免「他说三点见」这类真实时刻被误杀）
+  const QUANT_VERB_SRC = '再说|说说|讲讲|讲|提出|提|补充|列出|列举|列|有';
+  // 副词「一点 / 半点」：快一点、早一点、慢一点、一点点、有一点、一点都不、一点也不…
+  const ADV_POINT_SRC = '一点点|一点儿|一点(?:都|也|不|没)|(?:快|慢|早|晚|多|少|好|差|高|低|有|稍|稍微|提前|再)\\s*一?\\s*点{1,2}';
+  // 小数 / 算术 / 温度：「零点五」「减八点八」「调高24点5度」里的「点」是小数点，不是时刻
+  const DECIMAL_SRC = '(?:减去?|加上?|乘以?|除以?)\\s*[0-9零一二两三四五六七八九十]{1,3}\\s*点[0-9零一二两三四五六七八九]{1,2}'
+    + '|点[0-9零一二两三四五六七八九]{1,2}\\s*(?:度|倍|毫升|升|米|公斤|千克|斤|℃|%|％)';
+  // 成语：内含数词/日/天，容易被日期或时刻规则误吃
+  const IDIOM_SRC = '一日之计在于晨|一年之计在于春|一寸光阴一寸金|三天打鱼两天晒网|三心二意|七上八下|四面八方|九牛一毛|十全十美|朝三暮四|不三不四|一举两得|三言两语|五花八门|五湖四海';
+  // 「黎明」作人名（演艺语境）而非拂晓
+  const NAME_LIKE_SRC = '黎明(?=主演|导演|演唱|的歌|专辑|电影|电视剧|先生|女士|老师|的粉丝)';
+  // 时段词：出现时段词时，句首的列举动词不足以证明「点」是量词（下午两点开会）
+  const TOD_SRC = '凌晨|拂晓|早上|早晨|上午|清早|中午|正午|下午|傍晚|黄昏|晚上|夜里|夜晚|深夜';
+
+  function maskSpan(chars, start, end) {
+    for (let i = start; i < end && i < chars.length; i++) chars[i] = MASK_CHAR;
+  }
+
+  /**
+   * 把「非时刻词」从计时文本中掩蔽掉。
+   * @param {string} t 原始文本
+   * @return {string} 与入参等长的文本，非时刻片段被替换为全角空格
+   */
+  function maskNonTime(t) {
+    if (!t) return t;
+    const chars = String(t).split('');
     let m;
-    if ((m = t.match(/(\d{1,2})[:：](\d{1,2})/))) return pad2(+m[1]) + ':' + pad2(+m[2]);
-    if ((m = t.match(/(\d{1,2})\s*点\s*(半|一刻|三刻|(\d{1,2})\s*分?)?/))) {
-      let h = +m[1], mi = 0;
-      if (m[2] === '半') mi = 30; else if (m[2] === '一刻') mi = 15; else if (m[2] === '三刻') mi = 45; else if (m[3] !== undefined) mi = +m[3];
-      if (h === 24) h = 0;
-      return pad2(h) + ':' + pad2(mi);
+    // 1) 超长数字串（≥11 位）：手机号 / 身份证 / 卡号 / 订单号，绝不可能是时刻
+    const longRe = /(\d{11,})/g;
+    while ((m = longRe.exec(t))) maskSpan(chars, m.index, m.index + m[0].length);
+    // 2) 成语
+    const idiomRe = new RegExp('(' + IDIOM_SRC + ')', 'g');
+    while ((m = idiomRe.exec(t))) maskSpan(chars, m.index, m.index + m[0].length);
+    // 3) 人名词「黎明」+ 演艺语境
+    const nameRe = new RegExp('(' + NAME_LIKE_SRC + ')', 'g');
+    while ((m = nameRe.exec(t))) maskSpan(chars, m.index, m.index + m[0].length);
+    // 4) 副词「一点 / 半点」（快一点、早一点、一点点、一点都不…）
+    const advRe = new RegExp('(' + ADV_POINT_SRC + ')', 'g');
+    while ((m = advRe.exec(t))) maskSpan(chars, m.index, m.index + m[0].length);
+    // 4.5) 小数 / 算术 / 温度（零点五、减八点八、调高24点5度）
+    const decRe = new RegExp('(' + DECIMAL_SRC + ')', 'g');
+    while ((m = decRe.exec(t))) maskSpan(chars, m.index, m.index + m[0].length);
+    // 5) 量词「点」：点后紧跟量词名词，或点前是列举动词且全句无时段词
+    const hasTod = new RegExp('(?:' + TOD_SRC + ')').test(t);
+    const quantNounRe = new RegExp('^(?:' + QUANT_NOUN_SRC + ')');
+    const quantVerbRe = new RegExp('(?:' + QUANT_VERB_SRC + ')\\s*$');
+    const pointRe = /(?:[一二两三四五六七八九十]|\d{1,2})\s*点/g;
+    while ((m = pointRe.exec(t))) {
+      const endIdx = m.index + m[0].length;
+      const isNoun = quantNounRe.test(t.slice(endIdx));
+      const isVerb = !hasTod && quantVerbRe.test(t.slice(0, m.index));
+      if (isNoun || isVerb) maskSpan(chars, m.index, endIdx);
     }
-    if ((m = t.match(/(十|[零一二两三四五六七八九])\s*点\s*(半|一刻|三刻|([零一二两三四五六七八九])\s*分?)?/))) {
-      let h = cnNum(m[1]), mi = 0;
-      if (m[2] === '半') mi = 30; else if (m[2] === '一刻') mi = 15; else if (m[2] === '三刻') mi = 45; else if (m[3] !== undefined) mi = cnNum(m[3]);
-      if (h === 24) h = 0;
-      return pad2(h) + ':' + pad2(mi);
+    return chars.join('');
+  }
+
+  /* ---------------- 时刻词统一解析（中文数字修复） ----------------
+   * 小时：数字（1..24）/ 「十」「十一」「二十三」等中文数词 / 单个中文数字（含「零」「两」）
+   * 分钟：「半」=30；「N刻」=N×15（一刻 15、两刻 30、三刻 45、1刻 15）；「N分」；中文「十五分」
+   * 注意：`{1,3}刻` 必须排在 `\d{1,2}\s*分?` 之前，否则「3点1刻」会把 1 吃成 1 分钟。 */
+  const HOUR_SRC = '(\\d{1,2}|[一二两三四五六七八九]?十[一二三四五六七八九]?|[零一二两三四五六七八九])';
+  const MIN_SRC = '(半|[零一二两三四五六七八九十\\d]{1,3}\\s*刻|[零一二两三四五六七八九十]{1,3}\\s*分|\\d{1,2}\\s*分?)?';
+  const CLOCK_RE = new RegExp(HOUR_SRC + '\\s*点\\s*' + MIN_SRC);
+  const CLOCK_RE_ALL = new RegExp(CLOCK_RE.source, 'g');
+  const COLON_RE = /(\d{1,2})[:：](\d{1,2})/;
+
+  /**
+   * 解析「点」之后的分钟片段。
+   * @param {string|undefined} tail 形如「半」「一刻」「两刻」「3刻」「15分」「十五分」
+   * @return {number} 分钟（0..59）
+   */
+  function parseMinuteTail(tail) {
+    if (tail === undefined || tail === null) return 0;
+    const s = String(tail).replace(/\s+/g, '');
+    if (!s) return 0;
+    if (s === '半') return 30;
+    let m;
+    if ((m = s.match(/^([零一二两三四五六七八九十\d]{1,3})刻$/))) {
+      const k = cnNum(m[1]);
+      // 一刻 15 / 两刻 30 / 三刻 45；四刻及以上不是常用说法，按 0 处理
+      return (k === 1 || k === 2 || k === 3) ? k * 15 : 0;
+    }
+    if ((m = s.match(/^([零一二两三四五六七八九十]{1,3})分$/))) {
+      const n = cnNum(m[1]);
+      return n === null ? 0 : n;
+    }
+    if ((m = s.match(/^(\d{1,2})分?$/))) return parseInt(m[1], 10);
+    return 0;
+  }
+
+  /**
+   * 从文本中抽取一个时刻（先掩蔽非时刻词，再走统一时刻正则）。
+   * @param {string} t 原始文本
+   * @return {{hour:number, minute:number, consumed:string}|null} 未识别到时刻时返回 null
+   */
+  function matchClock(t) {
+    const src = maskNonTime(t || '');
+    let m;
+    if ((m = src.match(COLON_RE))) {
+      return { hour: parseInt(m[1], 10), minute: parseInt(m[2], 10), consumed: m[0] };
+    }
+    if ((m = src.match(CLOCK_RE))) {
+      const h = cnNum(m[1]);
+      if (h === null) return null;
+      // 小时超出 0..24 不是钟点（「27点」多为序号/温度），直接判为未识别
+      if (h < 0 || h > 24) return null;
+      return { hour: (h === 24 ? 0 : h), minute: parseMinuteTail(m[2]), consumed: m[0] };
     }
     return null;
+  }
+
+  // 从文本中抽取一个时刻（与 create 路径同源：统一走 matchClock，避免两处正则漂移）
+  function matchTime(t) {
+    const c = matchClock(t);
+    return c ? (pad2(c.hour) + ':' + pad2(c.minute)) : null;
   }
   function matchRecurrence(t) {
     let m;
@@ -174,7 +284,7 @@
     for (const k in DAYOFF) { if (t.includes(k)) { const d = new Date(); d.setDate(d.getDate() + DAYOFF[k]); match.date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; break; } }
     let rest = t.replace(/(取消|删掉|删除|去掉|移除|撤销|关掉|改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
     // 去掉已被 time/recurrence/date 消费掉的文本，避免残留污染 label
-    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(/(\d{1,2})\s*点\s*(半|一刻|三刻|\d{1,2}\s*分?)?/g, '').replace(/(十|[零一二两三四五六七八九])\s*点\s*(半|一刻|三刻|([零一二两三四五六七八九])\s*分?)?/g, '');
+    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '');
     rest = rest.replace(/(每天|每日|每一天|工作日|周末|每周|每星期|每个礼拜|周[一二三四五六日天七]|星期[一二三四五六日天七]|礼拜[一二三四五六日天七]|周一到周五|星期一到星期五)/g, '');
     for (const k in DAYOFF) rest = rest.split(k).join('');
     rest = rest.replace(/\s+/g, '').trim();
@@ -192,7 +302,7 @@
       u.lead_minutes = isHalf ? 30 : ((m[2].includes('小时') || m[2].includes('钟头')) ? n * 60 : n);
     }
     let rest = spec.replace(/(改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|提前|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
-    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(/(\d{1,2})\s*点\s*(半|一刻|三刻|\d{1,2}\s*分?)?/g, '').replace(/(十|[零一二两三四五六七八九])\s*点\s*(半|一刻|三刻|([零一二两三四五六七八九])\s*分?)?/g, '');
+    rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '');
     rest = rest.replace(/(每天|每日|每一天|工作日|周末|每周|每星期|每个礼拜|周[一二三四五六日天七]|星期[一二三四五六日天七]|礼拜[一二三四五六日天七]|周一到周五|星期一到星期五)/g, '');
     for (const k in DAYOFF) rest = rest.split(k).join('');
     rest = rest.replace(/\s+/g, '').trim();
@@ -341,26 +451,10 @@
       if (todConsumed) consumed.push(todConsumed);
     }
 
-    // ---- 6. 时刻解析 ----
+    // ---- 6. 时刻解析（P0：先掩蔽「两点意见 / 快一点 / 身份证…」等非时刻词，再统一解析） ----
     let hour = null, minute = 0, timeConsumed = null;
-    if ((m = text.match(/(\d{1,2})[:：](\d{1,2})/))) { hour = parseInt(m[1], 10); minute = parseInt(m[2], 10); timeConsumed = m[0]; }
-    else if ((m = text.match(/(\d{1,2})\s*点\s*(半|一刻|三刻|(\d{1,2})\s*分?)?/))) {
-      hour = parseInt(m[1], 10);
-      if (m[2] === '半') minute = 30;
-      else if (m[2] === '一刻') minute = 15;
-      else if (m[2] === '三刻') minute = 45;
-      else if (m[3] !== undefined) minute = parseInt(m[3], 10);
-      else minute = 0;
-      timeConsumed = m[0];
-    } else if ((m = text.match(/(十|[零一二两三四五六七八九])\s*点\s*(半|一刻|三刻|([零一二两三四五六七八九])\s*分?)?/))) {
-      hour = cnNum(m[1]);
-      if (m[2] === '半') minute = 30;
-      else if (m[2] === '一刻') minute = 15;
-      else if (m[2] === '三刻') minute = 45;
-      else if (m[3] !== undefined) minute = cnNum(m[3]);
-      else minute = 0;
-      timeConsumed = m[0];
-    }
+    const clock = matchClock(text);
+    if (clock) { hour = clock.hour; minute = clock.minute; timeConsumed = clock.consumed; }
     if (timeConsumed) consumed.push(timeConsumed);
 
     // ---- 2.5 提前提醒（lead） ----
@@ -381,7 +475,18 @@
     const nowEpoch = now.getTime();
     // 用户在 tz 下的"今天"日历日（跨时区基准，避免 UTC 容器下错位）。所有换算走 scheduler。
     const todayTz = sched().tzDateParts(nowEpoch, tz);
-    let absDate = parseAbsDate(text) || parseHoliday(text, now);
+    // 日期锚点同样跑在掩蔽文本上：「一日之计在于晨」不能因为含「一日」被当作 1 号
+    const timeText = maskNonTime(text);
+    // 被掩蔽的片段（量词点 / 副词点 / 超长数字 / 成语 / 人名词）不计入备注
+    for (let i = 0; i < text.length; i++) {
+      if (timeText[i] === MASK_CHAR && text[i] !== MASK_CHAR) {
+        let j = i;
+        while (j < text.length && timeText[j] === MASK_CHAR && text[j] !== MASK_CHAR) j++;
+        consumed.push(text.slice(i, j));
+        i = j - 1;
+      }
+    }
+    let absDate = parseAbsDate(timeText) || parseHoliday(text, now);
 
     // ---- 6.6 多轮澄清：用上一轮已理解的锚点补全本轮（结构化合并，避免盲目拼接丢上下文） ----
     let contradiction = false;

@@ -146,4 +146,54 @@ module.exports = [
   { input: '明天早上8点叫我起床', tz: 'Asia/Shanghai', expect: { success: true, time: '08:00', timezone: 'Asia/Shanghai', recurrence: 'none', labelIncludes: ['起床'] } },
   { input: '每周三下午3点健身', tz: 'Europe/London', expect: { success: true, time: '15:00', timezone: 'Europe/London', recurrence: 'weekly:3', labelIncludes: ['健身'] } },
   { input: '30分钟后提醒我开会', tz: 'America/Los_Angeles', expect: { success: true, relSeconds: 30 * 60, timezone: 'America/Los_Angeles', labelIncludes: ['开会'] } },
+
+  // ============================================================
+  // 借鉴 fst-time-nlu（Apache-2.0）的第一阶段能力回归
+  // ============================================================
+
+  // —— P0 误报过滤（量词「点」：点 = 「项/条」而非时刻）——
+  // 这些句子里的数词 + 点表示"条数"，绝不能解析成 02:00 / 03:00 / 01:00
+  { input: '再说两点',   expect: { success: false, needsClarification: true } },
+  { input: '讲三点意见', expect: { success: false, needsClarification: true } },
+  { input: '有两点建议', expect: { success: false, needsClarification: true } },
+  { input: '提几点想法', expect: { success: false, needsClarification: true } },
+  { input: '补充一点',   expect: { success: false, needsClarification: true } },
+
+  // —— P0 误报过滤（副词「一点/半点」：程度副词，不是 1 点）——
+  { input: '快一点',   expect: { success: false, needsClarification: true } },
+  { input: '早一点',   expect: { success: false, needsClarification: true } },
+  { input: '慢一点',   expect: { success: false, needsClarification: true } },
+  { input: '一点点',   expect: { success: false, needsClarification: true } },
+  { input: '有一点',   expect: { success: false, needsClarification: true } },
+  { input: '多一点',   expect: { success: false, needsClarification: true } },
+  { input: '少一点',   expect: { success: false, needsClarification: true } },
+
+  // —— P0 误报过滤（超长数字串：手机号/身份证/卡号）——
+  { input: '身份证45901199001011234', expect: { success: false, needsClarification: true } },
+
+  // —— P0 误报过滤（成语 / 人名词：「一日」不是 1 号，「黎明」不是拂晓）——
+  { input: '一日之计在于晨',   expect: { success: false, needsClarification: true } },
+  { input: '黎明主演的电影',   expect: { success: false, needsClarification: true } },
+
+  // —— P0 无害性：合法时刻不得被过滤规则误杀 ——
+  { input: '两点开会',     expect: { success: true, time: '02:00', recurrence: 'none', labelIncludes: ['开会'] } },
+  { input: '下午两点',     expect: { success: true, time: '14:00', recurrence: 'none' } },
+  { input: '十一点提醒我', expect: { success: true, time: '11:00', recurrence: 'none' } },
+  { input: '一点钟',       expect: { success: true, time: '01:00', recurrence: 'none' } },
+  // 量词点与真实时刻同句时，只滤掉量词、保留真实时刻
+  { input: '讲两点意见，下午三点开会', expect: { success: true, time: '15:00', recurrence: 'none', labelIncludes: ['开会'] } },
+
+  // —— 中文数字细节修复（「X点Y刻」曾被吃成 X:0Y）——
+  { input: '3点1刻',            expect: { success: true, time: '03:15', recurrence: 'none' } },
+  { input: '提醒我三点一刻开会',  expect: { success: true, time: '03:15', recurrence: 'none', labelIncludes: ['开会'] } },
+  { input: '3点三刻',           expect: { success: true, time: '03:45', recurrence: 'none' } },
+  { input: '三点三刻',          expect: { success: true, time: '03:45', recurrence: 'none' } },
+  { input: '三点半',            expect: { success: true, time: '03:30', recurrence: 'none' } },
+  { input: '三点两刻',          expect: { success: true, time: '03:30', recurrence: 'none' } },
+  // 中文分钟数（十及以上）此前会被丢成 X:00
+  { input: '三点十五分',         expect: { success: true, time: '03:15', recurrence: 'none' } },
+  // 中文两位数小时（十一/十二/二十三）此前会被截成个位
+  { input: '十二点',            expect: { success: true, time: '12:00', recurrence: 'none' } },
+  { input: '二十三点睡觉',       expect: { success: true, time: '23:00', recurrence: 'none', labelIncludes: ['睡觉'] } },
+  { input: '每天下午三点一刻开会', expect: { success: true, time: '15:15', recurrence: 'daily', labelIncludes: ['开会'] } },
 ];
