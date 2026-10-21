@@ -381,4 +381,29 @@ module.exports = [
   { input: '1分钟后提醒我',    now: NOW_C, expect: { success: true, time: '15:10', relSeconds: 60 } },
   { input: '再过30秒提醒我',   now: NOW_C, expect: { success: true, time: '15:09', relSeconds: 30 } },
   { input: '2小时18分钟以后',  now: NOW_C, expect: { success: true, time: '17:27', relSeconds: 8280 } },
+
+  // ============================================================
+  // 「时长 + 倒计时」后置语序（matchRelDuration 分支 ③）
+  // 基准同上 NOW_C = 上海 2026-10-21 15:09
+  // ============================================================
+
+  // —— 正例：裸后置 ——
+  { input: '30秒倒计时',       now: NOW_C, expect: { success: true, relSeconds: 30 } },
+  { input: '30分钟倒计时',     now: NOW_C, expect: { success: true, relSeconds: 1800 } },
+  { input: '1小时倒计时',      now: NOW_C, expect: { success: true, relSeconds: 3600 } },
+  { input: '30秒的倒计时',     now: NOW_C, expect: { success: true, relSeconds: 30 } },
+  // —— 正例：带前置祈使动词（consumed 覆盖整段，label 应被剥干净）——
+  { input: '设置30秒倒计时',   now: NOW_C, expect: { success: true, relSeconds: 30, labelExcludes: ['设置', '倒计时', '30秒'] } },
+  { input: '帮我设置30秒倒计时', now: NOW_C, expect: { success: true, relSeconds: 30, labelExcludes: ['倒计时'] } },
+  { input: '来个30秒倒计时',   now: NOW_C, expect: { success: true, relSeconds: 30, labelExcludes: ['来个', '倒计时'] } },
+  // —— 正例：复合时长 / 中文数字 ——
+  { input: '1分30秒倒计时',    now: NOW_C, expect: { success: true, relSeconds: 90 } },
+  { input: '1小时30分钟倒计时', now: NOW_C, expect: { success: true, relSeconds: 5400 } },
+  { input: '三十秒倒计时',     now: NOW_C, expect: { success: true, relSeconds: 30 } },
+  { input: '一个半小时倒计时', now: NOW_C, expect: { success: true, relSeconds: 5400 } },
+  // —— 正例：后置 + 动作词，label 只留动作 ——
+  { input: '来个30秒倒计时看书', now: NOW_C, expect: { success: true, relSeconds: 30, labelIncludes: ['看书'], labelExcludes: ['倒计时'] } },
+  // —— 反例：时长不合法 / 无时长 → 仍走澄清 ——
+  { input: '0秒倒计时',        now: NOW_C, expect: { success: false, needsClarification: true } },
+  { input: '停车倒计时',       now: NOW_C, expect: { success: false, needsClarification: true } },
 ];

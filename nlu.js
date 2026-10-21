@@ -642,7 +642,9 @@
 
   /**
    * 从文本中识别相对时长表达式。
-   * 两种形态：①「X + 后/以后/之后/内」（10分钟后、10分钟内）②「再过/过了/经过 + X」（再过十分钟叫我）。
+   * 三种形态：①「X + 后/以后/之后/内」（10分钟后、10分钟内）
+   *           ②「再过/过了/经过/倒计时/倒数 + X」（再过十分钟叫我、倒计时30秒）
+   *           ③「X (+的) + 倒计时/倒数」（设置30秒倒计时、30分钟倒计时）——时长在前、倒计时在后
    * @param {string} t 原始文本
    * @return {{ms:number, consumed:string}|null}
    */
@@ -657,6 +659,16 @@
     // ② 只有前缀（「再过十分钟叫我」：中文口语常省略「后」）
     const preRe = new RegExp(DUR_PRE_SRC + '\\s*(' + DUR_RUN_SRC + ')');
     if ((m = t.match(preRe))) {
+      const ms = parseDurationMs(m[1]);
+      if (ms) return { ms: ms, consumed: m[0] };
+    }
+    // ③ 后置式：「(帮我设置)30秒(的)倒计时」——时长在前、倒计时在后。
+    // 前置动词只放行这一串常见祈使词（且整个 match 必须含尾部「倒计时/倒数」），误伤面很小。
+    // consumed 取整个 m[0]，让 label 剥离时把「设置」「倒计时」一起带走。
+    const postRe = new RegExp(
+      '(?:帮我|给我|请)?\\s*(?:设置|设|来个|来一个|定个|定|开个|开|开始|加个|加)?\\s*'
+      + '(' + DUR_RUN_SRC + ')\\s*的?\\s*(?:倒计时|倒数)');
+    if ((m = t.match(postRe))) {
       const ms = parseDurationMs(m[1]);
       if (ms) return { ms: ms, consumed: m[0] };
     }
