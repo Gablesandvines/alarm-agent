@@ -136,7 +136,8 @@ function check(c) {
       });
     }
     if (e.relSeconds !== undefined) {
-      const nowSec = Math.floor(Date.now() / 1000);
+      // 有固定基准（用例给了 now）就按基准算，否则取真实当前时间；容差 5s 抵挡跨秒抖动
+      const nowSec = Math.floor((c.now !== undefined ? c.now : Date.now()) / 1000);
       const diff = a.timestamp - nowSec;
       if (Math.abs(diff - e.relSeconds) > 5)
         errs.push(`相对时间偏移 期望≈${e.relSeconds}s 实得 ${diff}s`);

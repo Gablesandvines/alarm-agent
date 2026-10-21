@@ -10,6 +10,8 @@
 const NOW_A = Date.parse('2025-01-21T08:00:00Z');
 // 固定基准：2026-08-01T00:00:00Z = 上海 2026-08-01 08:00（用于「当天」类节日修饰）
 const NOW_B = Date.parse('2026-08-01T00:00:00Z');
+// 固定基准：2026-10-21T07:09:00Z = 上海 2026-10-21 15:09（用于「倒计时」秒级精度，含秒不为 0 的基准）
+const NOW_C = Date.parse('2026-10-21T07:09:00Z');
 
 module.exports = [
   // —— 日锚点 + 时段 ——
@@ -351,4 +353,32 @@ module.exports = [
   { input: '十点差',           now: NOW_A, expect: { success: true, time: '10:00', dateFixed: '2025-01-21' } },
   // M 必须是 1..59：「差六十分」「过六十分」不识别为 09:00/11:00，退回 10:00
   { input: '十点差六十分',     now: NOW_A, expect: { success: true, time: '10:00', dateFixed: '2025-01-21' } },
+
+  // ============================================================
+  // 「倒计时 / 倒数」表达（秒级精度，与「30秒后」同一条相对时长路径）
+  // 基准：NOW_C = 2026-10-21T07:09:00Z = 上海 2026-10-21 15:09
+  // ============================================================
+
+  // —— 正例：单个时长片段 ——
+  { input: '倒计时30秒',   now: NOW_C, expect: { success: true, time: '15:09', relSeconds: 30 } },
+  { input: '倒计时5分钟',  now: NOW_C, expect: { success: true, time: '15:14', relSeconds: 300 } },
+  { input: '倒计时1小时',  now: NOW_C, expect: { success: true, time: '16:09', relSeconds: 3600 } },
+  // —— 正例：复合时长 + 中文数字 ——
+  { input: '倒计时1分30秒', now: NOW_C, expect: { success: true, time: '15:10', relSeconds: 90 } },
+  { input: '倒计时三十秒',   now: NOW_C, expect: { success: true, time: '15:09', relSeconds: 30 } },
+  // —— 正例：标签剥离 ——
+  { input: '倒计时30秒提醒我', now: NOW_C, expect: { success: true, time: '15:09', relSeconds: 30, labelExcludes: ['倒计时', '秒'] } },
+  { input: '倒计时30秒看书',   now: NOW_C, expect: { success: true, time: '15:09', relSeconds: 30, labelIncludes: ['看书'], labelExcludes: ['倒计时'] } },
+  // 前缀 + 后缀并存只计一次（不得变成 60s）
+  { input: '倒计时30秒后提醒我', now: NOW_C, expect: { success: true, time: '15:09', relSeconds: 30 } },
+
+  // —— 反例：0 时长 / 无时长 → 仍走澄清 ——
+  { input: '倒计时0秒', now: NOW_C, expect: { success: false, needsClarification: true } },
+  { input: '倒计时',    now: NOW_C, expect: { success: false, needsClarification: true } },
+
+  // —— 回归：既有相对时长口径不变（同一 NOW_C 基准）——
+  { input: '30秒后提醒我',     now: NOW_C, expect: { success: true, time: '15:09', relSeconds: 30 } },
+  { input: '1分钟后提醒我',    now: NOW_C, expect: { success: true, time: '15:10', relSeconds: 60 } },
+  { input: '再过30秒提醒我',   now: NOW_C, expect: { success: true, time: '15:09', relSeconds: 30 } },
+  { input: '2小时18分钟以后',  now: NOW_C, expect: { success: true, time: '17:27', relSeconds: 8280 } },
 ];
