@@ -317,7 +317,26 @@
    * 这些助手让 parseAlarm 在不依赖「闹钟列表」的前提下，仅产出结构化指令
    * （match / update）。真正的匹配与执行由持有列表的前端/服务端完成。 */
   const pad2 = n => String(n).padStart(2, '0');
+  /**
+   * 时区入参的兜底解析：非法 / 空 / 非字符串一律静默回退上海。
+   * 只用 Intl 做「是否合法」的校验，不参与任何换算（换算仍走 scheduler）。
+   * 为什么要兜底：cancel/modify/query 分支在意图识别后就 return 了，一旦在这里抛，
+   * 整个「取消/查询」会 500（/api/parse 没有 invalid_timezone 校验，前端 tz 也可能来自 localStorage 脏值）。
+   * 注意这不动 /v1/parse 的 400 invalid_timezone 语义——那是 server 层 resolveEffectiveTz 的职责。
+   * @param {*} tz 期望是 IANA 时区名
+   * @return {string} 可用的 IANA 时区名（至少 'Asia/Shanghai'）
+   */
+  function safeTz(tz) {
+    const s = (typeof tz === 'string' && tz.trim()) ? tz.trim() : 'Asia/Shanghai';
+    try { new Intl.DateTimeFormat('en-US', { timeZone: s }); return s; }
+    catch (_) { return 'Asia/Shanghai'; }
+  }
   const DAYOFF = { '今天': 0, '今日': 0, '今晚': 0, '今早': 0, '今晨': 0, '明天': 1, '明早': 1, '明晨': 1, '明晚': 1, '明日': 1, '后天': 2, '大后天': 3, '昨天': -1, '前天': -2 };
+  // 日锚点按「key 长度降序」匹配：「大后天」必须先于「后天」命中，否则会算成 +2 天
+  // （不能直接改 DAYOFF 字面量顺序：主路径是有序 if-else，且 parseEndDate 依赖既有顺序）
+  function dayoffKeysByLen() {
+    return Object.keys(DAYOFF).sort((a, b) => b.length - a.length);
+  }
 
   /* ---------------- P0 误报过滤：非时刻词掩蔽 ----------------
    * 「两点意见」「快一点」「身份证4590…」「一日之计在于晨」「黎明主演的电影」这类文本里的
@@ -755,7 +774,8 @@
     const rec = matchRecurrence(t); if (rec) match.recurrence = rec;
     // 日期增量按「用户在 tz 下的今天」做纯 UTC 日历算术（不用本地 new Date()，避免 UTC 容器下错位）
     const today = (ctx && ctx.todayTz) || sched().tzDateParts(Date.now(), 'Asia/Shanghai');
-    for (const k in DAYOFF) {
+    const dayKeys = dayoffKeysByLen();
+    for (const k of dayKeys) {
       if (t.includes(k)) {
         const dt = new Date(Date.UTC(today.y, today.mo - 1, today.d) + DAYOFF[k] * 86400000);
         match.date = dt.getUTCFullYear() + '-' + pad2(dt.getUTCMonth() + 1) + '-' + pad2(dt.getUTCDate());
@@ -767,7 +787,9 @@
     // 顺序：先剥时刻片段，再剥日锚点（明晚/今晚），最后剥时段词——否则「明晚」会先被剥成「明」
     rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '').replace(OFFSET_RESIDUE_RE, '');
     if (clk.timeConsumed) rest = rest.split(clk.timeConsumed).join('');
-    for (const k in DAYOFF) rest = rest.split(k).join('');
+    for (const k of dayKeys) rest = rest.split(k).join('');
+    // 剥查询套话（「我的闹钟有哪些」不该留下 label）；但「查看看书的闹钟」的「看书」要保住
+    rest = rest.replace(/(有哪些|有什么|多少个|几个|列表|清单|在吗|都有|呢|查看|查一下|列出|显示|看一下|看下|告诉我)/g, '');
     rest = rest.replace(new RegExp(REC_STRIP_SRC, 'g'), '');
     if (clk.todConsumed) rest = rest.split(clk.todConsumed).join('');
     rest = rest.replace(/\s+/g, '').trim();
@@ -788,9 +810,10 @@
     let rest = spec.replace(/(改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|提前|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
     rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '').replace(OFFSET_RESIDUE_RE, '');
     if (clk.timeConsumed) rest = rest.split(clk.timeConsumed).join('');
-    if (clk.todConsumed) rest = rest.split(clk.todConsumed).join('');
+    // 日锚点按 key 长度降序剥，「大后天」先于「后天」，否则残留「大」
+    for (const k of dayoffKeysByLen()) rest = rest.split(k).join('');
     rest = rest.replace(new RegExp(REC_STRIP_SRC, 'g'), '');
-    for (const k in DAYOFF) rest = rest.split(k).join('');
+    if (clk.todConsumed) rest = rest.split(clk.todConsumed).join('');
     rest = rest.replace(/\s+/g, '').trim();
     if (rest) u.label = rest;
     return u;
@@ -900,8 +923,9 @@
     }
     const hm = match.time.split(':').map(Number);
     let baseTs = sched().wallToEpoch(y, mo, d, hm[0], hm[1], tz);
-    if (!match.date && baseTs <= nowEpoch) {
+    if (!match.date && baseTs < nowEpoch) {
       // 没给日期且今天这个点已过 → 顺延到明天（走 addDays 做日历算术，避免 +86400000 在 DST 下漂移）
+      // 判定用严格小于：与 scheduler.computeNext 的 `while (t < now)` 对齐——「正好等于 now」算未过
       const nb = sched().addDays(y, mo, d, 1);
       baseTs = sched().wallToEpoch(nb.y, nb.mo, nb.d, hm[0], hm[1], tz);
     }
@@ -937,7 +961,7 @@
     // ---- 0. 时区 / 基准时间（提到最前：cancel / query / modify 分支也要用，不能只在 create 分支求值） ----
     // 支持 opts.now 覆盖"当前时间"基准（开放 API 的确定性测试/回放）；默认取真实当前时间
     // tz：贯穿全函数的时区（P3）。默认上海；显式 opts.tz 优先（开放 API / 前端检测传入）。
-    const tz = (opts && opts.tz) || 'Asia/Shanghai';
+    const tz = safeTz(opts && opts.tz);
     const nowEpoch = (opts && opts.now != null)
       ? (typeof opts.now === 'number' ? opts.now : new Date(opts.now).getTime())
       : Date.now();

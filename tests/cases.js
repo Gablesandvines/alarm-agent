@@ -495,4 +495,51 @@ module.exports = [
   { input: '背单词呢', now: NOW_D, expect: { intent: 'create', success: false, needsClarification: true } },
   { input: '每天下午14点10分提醒我看书', now: NOW_D, expect: {
     intent: 'create', success: true, time: '14:10', recurrence: 'daily', labelIncludes: ['看书'] } },
+
+  // ============================================================
+  // QA 复验发现的 4 项修补
+  // ============================================================
+
+  // —— 修 1：非法/空 tz 不再抛异常（cancel/query/modify 路径），静默回退上海 ——
+  { input: '删除晚上8点的闹钟', now: NOW_D, tz: 'Not/AZone', expect: {
+    success: true, intent: 'cancel', matchTime: '20:00', matchTimezone: 'Asia/Shanghai',
+    matchTimestamp: 1792670400 } },
+  { input: '删除晚上8点的闹钟', now: NOW_D, tz: '', expect: {
+    success: true, intent: 'cancel', matchTime: '20:00', matchTimezone: 'Asia/Shanghai' } },
+  { input: '删除晚上8点的闹钟', now: NOW_D, tz: null, expect: {
+    success: true, intent: 'cancel', matchTime: '20:00', matchTimezone: 'Asia/Shanghai' } },
+  { input: '删除晚上8点的闹钟', now: NOW_D, tz: '   ', expect: {
+    success: true, intent: 'cancel', matchTime: '20:00', matchTimezone: 'Asia/Shanghai' } },
+  // 查询/修改路径同样不能抛
+  { input: '查看晚上8点的闹钟', now: NOW_D, tz: 'Bad/Zone', expect: {
+    success: true, intent: 'query', matchTime: '20:00', matchTimezone: 'Asia/Shanghai' } },
+  { input: '把下午3点的闹钟改成晚上9点', now: NOW_D, tz: 'Bad/Zone', expect: {
+    success: true, intent: 'modify', matchTime: '15:00', updateTime: '21:00', matchTimezone: 'Asia/Shanghai' } },
+  // 合法 tz 仍照用（不被兜底吃掉）
+  { input: '删除晚上8点的闹钟', now: NOW_D, tz: 'Asia/Tokyo', expect: {
+    success: true, intent: 'cancel', matchTime: '20:00', matchTimezone: 'Asia/Tokyo', matchTimestamp: 1792666800 } },
+
+  // —— 修 2：日锚点按 key 长度降序匹配，「大后天」不再退化成「后天」——
+  { input: '取消大后天8点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchDate: '2026-10-25', matchTime: '08:00', matchLabelEmpty: true } },
+  { input: '取消后天8点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchDate: '2026-10-24', matchLabelEmpty: true } },
+  { input: '取消明天8点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchDate: '2026-10-23', matchLabelEmpty: true } },
+  { input: '取消今天8点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchDate: '2026-10-22', matchLabelEmpty: true } },
+  { input: '取消今晚8点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchDate: '2026-10-22', matchTime: '20:00', matchLabelEmpty: true } },
+  { input: '取消明早8点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchDate: '2026-10-23', matchLabelEmpty: true } },
+
+  // —— 修 3：「正好等于 now」算未过（与 scheduler.computeNext 的 t < now 对齐）——
+  { input: '取消9点43分的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '09:43', matchDatetime: '2026-10-22T09:43:00+08:00',
+    matchTimestamp: 1792633380 } },
+  { input: '取消9点42分的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '09:42', matchDatetime: '2026-10-23T09:42:00+08:00' } },
+  { input: '取消9点44分的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '09:44', matchDatetime: '2026-10-22T09:44:00+08:00' } },
+
+  // —— 修 4：查询套话不再产出垃圾 match.label，但有意义的筛选词要保住 ——
+  { input: '我的闹钟有哪些', now: NOW_D, expect: { success: true, intent: 'query', matchLabelEmpty: true } },
+  { input: '闹钟列表', now: NOW_D, expect: { success: true, intent: 'query', matchLabelEmpty: true } },
+  { input: '查看看书的闹钟', now: NOW_D, expect: { success: true, intent: 'query', matchLabel: '看书' } },
 ];

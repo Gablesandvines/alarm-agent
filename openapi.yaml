@@ -634,8 +634,9 @@ components:
         timestamp:
           type: integer
           description: >
-            该条件「下一次发生」的 Unix 秒级时间戳（与 alarm.timestamp 同单位）。
-            未给日期且当天该点已过时顺延到次日；无 time 条件时不返回该字段。
+            下一次发生时刻（Unix 秒，与 alarm.timestamp 同单位）。
+            未给日期时：时刻严格早于当前时间才顺延次日；等于当前时间视为未过（与 scheduler.computeNext
+            的 t < now 语义一致）。无 time 条件（含 match.all）时不返回该字段。
           example: 1792670400
         datetime:
           type: string
