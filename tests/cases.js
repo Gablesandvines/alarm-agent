@@ -12,6 +12,8 @@ const NOW_A = Date.parse('2025-01-21T08:00:00Z');
 const NOW_B = Date.parse('2026-08-01T00:00:00Z');
 // 固定基准：2026-10-21T07:09:00Z = 上海 2026-10-21 15:09（用于「倒计时」秒级精度，含秒不为 0 的基准）
 const NOW_C = Date.parse('2026-10-21T07:09:00Z');
+// 固定基准：2026-10-22T01:43:00Z = 上海 2026-10-22 09:43（用于取消/查询/修改的时段校正与 match.timestamp 顺延）
+const NOW_D = Date.parse('2026-10-22T01:43:00Z');
 
 module.exports = [
   // —— 日锚点 + 时段 ——
@@ -406,4 +408,91 @@ module.exports = [
   // —— 反例：时长不合法 / 无时长 → 仍走澄清 ——
   { input: '0秒倒计时',        now: NOW_C, expect: { success: false, needsClarification: true } },
   { input: '停车倒计时',       now: NOW_C, expect: { success: false, needsClarification: true } },
+
+  // ============================================================
+  // 取消/查询/修改：时段词校正（此前 match.time 少 12 小时 → 前端按 time 比对会删错闹钟）
+  // 基准 NOW_D = 2026-10-22T01:43:00Z = 上海 2026-10-22 09:43
+  // match 同时带「下一次发生」的时间戳（Unix 秒）与候选集
+  // ============================================================
+
+  // —— 对照表 7 条 ——
+  { input: '删除晚上8点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '20:00',
+    matchTimestamp: 1792670400, matchDatetime: '2026-10-22T20:00:00+08:00',
+    matchTimezone: 'Asia/Shanghai', matchBasis: 'next_occurrence', matchLabelEmpty: true } },
+  { input: '删掉下午3点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '15:00', matchTimestamp: 1792652400, matchLabelEmpty: true } },
+  { input: '取消中午1点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '13:00', matchTimestamp: 1792645200, matchLabelEmpty: true } },
+  { input: '取消明晚8点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '20:00', matchDate: '2026-10-23',
+    matchTimestamp: 1792756800, matchLabelEmpty: true } },
+  { input: '取消晚上8点半的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '20:30', matchTimestamp: 1792672200, matchLabelEmpty: true } },
+  { input: '查看晚上8点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'query', matchTime: '20:00', matchTimestamp: 1792670400, matchLabelEmpty: true } },
+  { input: '删除每晚8点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '20:00', matchRecurrence: 'daily',
+    matchTimestamp: 1792670400, occurrences: 3, occurrencesFirst: 1792670400, matchLabelEmpty: true } },
+
+  // —— 其它时段词：凌晨 / 早上 / 中午12 / 下午 / 晚上 ——
+  { input: '取消凌晨2点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchTime: '02:00', matchTimestamp: 1792692000 } },
+  { input: '删除早上8点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchTime: '08:00', matchTimestamp: 1792713600 } },
+  { input: '取消中午12点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchTime: '12:00', matchTimestamp: 1792641600 } },
+  { input: '取消下午4点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchTime: '16:00', matchTimestamp: 1792656000 } },
+  { input: '取消晚上10点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchTime: '22:00', matchTimestamp: 1792677600 } },
+
+  // —— 今晚 / 今早 / 明天 + 时段 ——
+  { input: '取消今晚8点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchTime: '20:00', matchDate: '2026-10-22', matchTimestamp: 1792670400 } },
+  { input: '查看今晚9点的闹钟', now: NOW_D, expect: { success: true, intent: 'query', matchTime: '21:00', matchDate: '2026-10-22', matchTimestamp: 1792674000, matchLabelEmpty: true } },
+  { input: '查看明天下午3点半的闹钟', now: NOW_D, expect: { success: true, intent: 'query', matchTime: '15:30', matchDate: '2026-10-23', matchTimestamp: 1792740600 } },
+  // 今早 6 点已过，但给了日期 → 保留当天（取消「今天早上响过的那个」是合理语义）
+  { input: '取消今早6点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchTime: '06:00', matchDate: '2026-10-22', matchTimestamp: 1792620000 } },
+
+  // —— timestamp 顺延：无日期且今天该点已过 → 明天（走 scheduler.addDays 日历算术） ——
+  { input: '取消8点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '08:00', matchTimestamp: 1792713600,
+    matchDatetime: '2026-10-23T08:00:00+08:00' } },
+  { input: '取消早上7点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '07:00', matchTimestamp: 1792710000,
+    matchDatetime: '2026-10-23T07:00:00+08:00' } },
+  // 未来时刻不顺延
+  { input: '取消下午5点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchTime: '17:00', matchTimestamp: 1792659600 } },
+
+  // —— 候选集：重复闹钟返回未来 3 次（复用 scheduler.computeNext）——
+  { input: '删除每天早上8点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchRecurrence: 'daily', matchTimestamp: 1792713600,
+    occurrences: 3, occurrencesFirst: 1792713600 } },
+  { input: '删除每天晚上10点半的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '22:30', matchRecurrence: 'daily',
+    matchTimestamp: 1792679400, occurrences: 3, occurrencesFirst: 1792679400 } },
+  { input: '取消工作日早上7点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchRecurrence: 'weekdays', matchTimestamp: 1792710000,
+    occurrences: 3, occurrencesFirst: 1792710000 } },
+  { input: '取消每周二下午2点的闹钟', now: NOW_D, expect: {
+    success: true, intent: 'cancel', matchTime: '14:00', matchRecurrence: 'weekly:2',
+    matchTimestamp: 1793080800, occurrences: 3, occurrencesFirst: 1793080800 } },
+  // 一次性闹钟不产生候选集
+  { input: '删除晚上8点的闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', occurrencesAbsent: true } },
+
+  // —— query：无时间条件时不能凭空猜 timestamp ——
+  { input: '查看闹钟', now: NOW_D, expect: { success: true, intent: 'query', matchTimestampAbsent: true, matchLabelEmpty: true } },
+  { input: '取消所有闹钟', now: NOW_D, expect: { success: true, intent: 'cancel', matchAll: true, matchTimestampAbsent: true } },
+
+  // —— modify：match 用旧描述（含时段校正），update 用新描述 ——
+  { input: '把下午3点的闹钟改成晚上9点', now: NOW_D, expect: {
+    success: true, intent: 'modify', matchTime: '15:00', matchTimestamp: 1792652400,
+    updateTime: '21:00', matchLabelEmpty: true } },
+
+  // —— 创建路径：每晚 / 每早 也要认成 daily（回归 + 新增）——
+  { input: '每晚8点提醒我', now: NOW_D, expect: { success: true, time: '20:00', recurrence: 'daily', labelExcludes: ['每'] } },
+  { input: '每早7点提醒我', now: NOW_D, expect: { success: true, time: '07:00', recurrence: 'daily' } },
+  { input: '每晚10点半看书', now: NOW_D, expect: { success: true, time: '22:30', recurrence: 'daily', labelIncludes: ['看书'] } },
+
+  // —— 意图回归（51bb00e 修过的历史 bug，放宽 query 正则后必须仍是 create）——
+  { input: '提醒我看书', now: NOW_D, expect: { intent: 'create', success: false, needsClarification: true } },
+  { input: '提醒我买几个苹果', now: NOW_D, expect: { intent: 'create', success: false, needsClarification: true } },
+  { input: '背单词呢', now: NOW_D, expect: { intent: 'create', success: false, needsClarification: true } },
+  { input: '每天下午14点10分提醒我看书', now: NOW_D, expect: {
+    intent: 'create', success: true, time: '14:10', recurrence: 'daily', labelIncludes: ['看书'] } },
 ];

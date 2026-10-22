@@ -592,6 +592,68 @@ components:
         request_id:
           type: string
           description: 本次请求唯一 ID，便于排障
+        intent:
+          type: string
+          enum: [create, cancel, modify, query]
+          description: >
+            语句意图。create=新建闹钟（结果在 alarm）；cancel=取消（条件在 match）；
+            modify=修改（旧条件在 match，新值在 update）；query=查询（条件在 match）。
+          example: "cancel"
+        match:
+          $ref: '#/components/schemas/MatchCriteria'
+    MatchCriteria:
+      type: object
+      description: >
+        取消 / 查询 / 修改意图下「被操作的闹钟」的匹配条件。所有字段都是可选条件。
+        time 已做时段词校正（「晚上8点」= 20:00），timestamp/datetime 表示该条件的
+        「下一次发生」（basis=next_occurrence）；只有重复条件才给出 occurrences 候选集。
+        前端可继续只用 time/date/recurrence/label/all 做过滤，新增字段为纯增量。
+      properties:
+        all:
+          type: boolean
+          description: 匹配全部闹钟（「取消所有闹钟」）
+          example: true
+        time:
+          type: string
+          pattern: "^\\d{2}:\\d{2}$"
+          description: 墙钟时间 HH:MM（已按时段词校正）
+          example: "20:00"
+        date:
+          type: string
+          pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+          description: 目标公历日（仅当语句给了日锚点，如「明晚」「今晚」）
+          example: "2026-10-23"
+        recurrence:
+          type: string
+          description: 重复规则（与 Alarm.recurrence 同一套取值）
+          example: "daily"
+        label:
+          type: string
+          description: 备注关键词（已剔除时间/重复/指令词）
+          example: "吃药"
+        timestamp:
+          type: integer
+          description: >
+            该条件「下一次发生」的 Unix 秒级时间戳（与 alarm.timestamp 同单位）。
+            未给日期且当天该点已过时顺延到次日；无 time 条件时不返回该字段。
+          example: 1792670400
+        datetime:
+          type: string
+          description: 下一次发生的带偏移 ISO8601（与 alarm.datetime 同格式）
+          example: "2026-10-22T20:00:00+08:00"
+        timezone:
+          type: string
+          description: 计算所用的 IANA 时区
+          example: "Asia/Shanghai"
+        basis:
+          type: string
+          enum: [next_occurrence]
+          description: timestamp 的语义，固定为 next_occurrence
+        occurrences:
+          type: array
+          description: 仅当给了重复条件时返回，未来 3 次发生的 Unix 秒（首项等于 timestamp）
+          items: { type: integer }
+          example: [1792670400, 1792756800, 1792843200]
     AlarmRecord:
       type: object
       description: 一条托管闹钟记录（含解析结果 + 平台元数据）

@@ -77,6 +77,62 @@ function check(c) {
     if (!r.match || !(r.match.label || '').includes(e.matchLabel))
       errs.push(`match.label 应包含 "${e.matchLabel}"（实得 ${r.match ? r.match.label : 'null'}）`);
   }
+  // match.label 不应残留被消费掉的时段词/动词（如「晚上」「查看」）
+  if (e.matchLabelExcludes) {
+    e.matchLabelExcludes.forEach(w => {
+      if (r.match && (r.match.label || '').includes(w))
+        errs.push(`match.label 不应包含 "${w}"（实得 ${r.match.label}）`);
+    });
+  }
+  if (e.matchLabelEmpty !== undefined) {
+    const has = !!(r.match && r.match.label);
+    if (has !== !e.matchLabelEmpty)
+      errs.push(`match.label 期望${e.matchLabelEmpty ? '为空' : '非空'}（实得 ${r.match ? JSON.stringify(r.match.label) : 'null'}）`);
+  }
+  if (e.matchDate !== undefined) {
+    if (!r.match || r.match.date !== e.matchDate)
+      errs.push(`match.date 期望 "${e.matchDate}" 实得 ${r.match ? r.match.date : 'null'}`);
+  }
+  // match.timestamp：Unix 秒（与 alarm.timestamp 同单位）
+  if (e.matchTimestamp !== undefined) {
+    if (!r.match || r.match.timestamp !== e.matchTimestamp)
+      errs.push(`match.timestamp 期望 ${e.matchTimestamp} 实得 ${r.match ? r.match.timestamp : 'null'}`);
+  }
+  // 无时间条件（如「查看闹钟」/ all）时不能凭空猜时间戳
+  if (e.matchTimestampAbsent !== undefined) {
+    const has = !!(r.match && r.match.timestamp !== undefined);
+    if (has !== !e.matchTimestampAbsent)
+      errs.push(`match.timestamp 期望${e.matchTimestampAbsent ? '不存在' : '存在'}`);
+  }
+  if (e.matchDatetime !== undefined) {
+    if (!r.match || r.match.datetime !== e.matchDatetime)
+      errs.push(`match.datetime 期望 "${e.matchDatetime}" 实得 ${r.match ? r.match.datetime : 'null'}`);
+  }
+  if (e.matchTimezone !== undefined) {
+    if (!r.match || r.match.timezone !== e.matchTimezone)
+      errs.push(`match.timezone 期望 "${e.matchTimezone}" 实得 ${r.match ? r.match.timezone : 'null'}`);
+  }
+  if (e.matchBasis !== undefined) {
+    if (!r.match || r.match.basis !== e.matchBasis)
+      errs.push(`match.basis 期望 "${e.matchBasis}" 实得 ${r.match ? r.match.basis : 'null'}`);
+  }
+  // 候选集：长度 + 首值 + 严格递增（复用 scheduler.computeNext 的推进结果）
+  if (e.occurrences !== undefined) {
+    const occ = r.match && r.match.occurrences;
+    if (!occ) errs.push('match.occurrences 应存在');
+    else {
+      if (occ.length !== e.occurrences) errs.push(`match.occurrences 长度 期望 ${e.occurrences} 实得 ${occ.length}`);
+      if (e.occurrencesFirst !== undefined && occ[0] !== e.occurrencesFirst)
+        errs.push(`match.occurrences[0] 期望 ${e.occurrencesFirst} 实得 ${occ[0]}`);
+      for (let i = 1; i < occ.length; i++) {
+        if (!(occ[i] > occ[i - 1])) errs.push(`match.occurrences 应严格递增（[${i}] ${occ[i]} <= [${i - 1}] ${occ[i - 1]}）`);
+      }
+    }
+  }
+  if (e.occurrencesAbsent !== undefined) {
+    const has = !!(r.match && r.match.occurrences);
+    if (has !== !e.occurrencesAbsent) errs.push(`match.occurrences 期望${e.occurrencesAbsent ? '不存在' : '存在'}`);
+  }
   if (e.updateTime !== undefined) {
     if (!r.update || r.update.time !== e.updateTime)
       errs.push(`update.time 期望 "${e.updateTime}" 实得 ${r.update ? r.update.time : 'null'}`);

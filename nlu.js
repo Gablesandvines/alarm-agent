@@ -317,7 +317,7 @@
    * 这些助手让 parseAlarm 在不依赖「闹钟列表」的前提下，仅产出结构化指令
    * （match / update）。真正的匹配与执行由持有列表的前端/服务端完成。 */
   const pad2 = n => String(n).padStart(2, '0');
-  const DAYOFF = { '今天': 0, '今日': 0, '明天': 1, '明早': 1, '明晨': 1, '明晚': 1, '后天': 2, '大后天': 3, '昨天': -1, '前天': -2 };
+  const DAYOFF = { '今天': 0, '今日': 0, '今晚': 0, '今早': 0, '今晨': 0, '明天': 1, '明早': 1, '明晨': 1, '明晚': 1, '明日': 1, '后天': 2, '大后天': 3, '昨天': -1, '前天': -2 };
 
   /* ---------------- P0 误报过滤：非时刻词掩蔽 ----------------
    * 「两点意见」「快一点」「身份证4590…」「一日之计在于晨」「黎明主演的电影」这类文本里的
@@ -578,10 +578,41 @@
     return matchBareClock(src);
   }
 
-  // 从文本中抽取一个时刻（与 create 路径同源：统一走 matchClock，避免两处正则漂移）
-  function matchTime(t) {
+  /* ---------------- 时刻 + 时段校正的唯一入口 ----------------
+   * create / cancel / modify / query 四条路径必须共用同一套「时段词校正」，
+   * 否则「删除晚上8点的闹钟」会得到 08:00 而不是 20:00（前端按 time 字符串比对 → 删错闹钟）。
+   * 这里把原先散落在 parseAlarm step5/step6 的「时段词识别 + correctHour」合成一处。 */
+  /**
+   * 解析文本里的时刻，并按时段词校正小时。
+   * @param {string} t 原始文本
+   * @param {number} [compoundTod] 复合日锚点携带的时段量（明晚/今晚 = 12）
+   * @return {{hour:?number, minute:number, todAdd:number, todConsumed:?string,
+   *           todNoon:boolean, timeConsumed:?string}} hour 为 null 表示未识别到时刻
+   */
+  function resolveClock(t, compoundTod) {
+    let todAdd = compoundTod || 0, todConsumed = null, todNoon = false, m;
+    if (todAdd === 0) {
+      if ((m = t.match(/(凌晨|拂晓)/))) { todAdd = 0; todConsumed = m[0]; }
+      else if ((m = t.match(/(早上|早晨|上午|清早)/))) { todAdd = 0; todConsumed = m[0]; }
+      else if ((m = t.match(/(中午|正午)/))) { todAdd = 0; todConsumed = m[0]; todNoon = true; }
+      else if ((m = t.match(/(下午|傍晚|黄昏)/))) { todAdd = 12; todConsumed = m[0]; }
+      else if ((m = t.match(/(晚上|夜里|夜晚|深夜)/))) { todAdd = 12; todConsumed = m[0]; }
+      else if ((m = t.match(/(晚|夜)/))) { todAdd = 12; todConsumed = m[0]; }
+    }
     const c = matchClock(t);
-    return c ? (pad2(c.hour) + ':' + pad2(c.minute)) : null;
+    let hour = null, minute = 0, timeConsumed = null;
+    if (c) {
+      hour = correctHour(c.hour, todAdd, todConsumed, todNoon);   // 已校正，下游不要再校正一次
+      minute = c.minute;
+      timeConsumed = c.consumed;
+    }
+    return { hour: hour, minute: minute, todAdd: todAdd, todConsumed: todConsumed, todNoon: todNoon, timeConsumed: timeConsumed };
+  }
+
+  // 从文本中抽取一个时刻（HH:MM，含时段校正）。取消/查询/修改路径与创建路径同源。
+  function matchTime(t) {
+    const r = resolveClock(t, 0);
+    return r.hour === null ? null : (pad2(r.hour) + ':' + pad2(r.minute));
   }
 
   /* ---------------- 复合相对时长（P1） ----------------
@@ -692,34 +723,62 @@
     if (todNoon && h >= 1 && h <= 3) h += 12;
     return h;
   }
+  // 「每晚/每早/每午/每晨」在口语里等价于「每天」（每晚8点提醒我 = 每天20:00）
+  const DAILY_SRC = '(?:每天|每日|每一天|每晚|每早|每午|每晨)';
+  // 重复规则在 label 里要剥掉的写法（与上面保持一致，避免「每晚」残留在备注里）
+  // 带星期字符的写法必须排在裸「每周 / 周X」之前，否则「每周二」会残留一个「二」、「下周一」残留「下」
+  const REC_STRIP_SRC = '(?:每天|每日|每一天|每晚|每早|每午|每晨|工作日|周末'
+    + '|(?:每周|每星期|每个礼拜)[一二三四五六日天七\\d]'
+    + '|(?:下个?|下星期|下礼拜|下周|本个?|本星期|本礼拜|本周)[一二三四五六日天七]'
+    + '|(?:周|星期|礼拜)[一二三四五六日天七]|周一到周五|星期一到星期五'
+    + '|每周|每星期|每个礼拜)';
   function matchRecurrence(t) {
     let m;
-    if ((m = t.match(/(每天|每日|每一天)/))) return 'daily';
+    if ((m = t.match(new RegExp(DAILY_SRC)))) return 'daily';
     if ((m = t.match(/(工作日|周一到周五|星期一到星期五)/))) return 'weekdays';
     if ((m = t.match(/(周末|周六周日|星期六星期天)/))) return 'weekend';
     if ((m = t.match(/(每周|每星期|每个礼拜)([一二三四五六日天七\d])/))) return 'weekly:' + weekNum(m[2]);
     return null;
   }
-  // 取消/修改：从「被操作对象描述」中抽取匹配条件
-  function extractMatch(t) {
+  /**
+   * 取消/查询：从「被操作对象描述」中抽取匹配条件。
+   * 时刻走 resolveClock（含时段校正），否则「删除晚上8点的闹钟」会得到 08:00 而删错闹钟。
+   * @param {string} t 被操作对象描述
+   * @param {{tz:string, nowEpoch:number, todayTz:{y:number, mo:number, d:number}}} ctx 时区上下文
+   * @return {Object} match 条件
+   */
+  function extractMatch(t, ctx) {
     const match = {};
     if (/所有|全部|都|每一个|所有闹钟|全部闹钟/.test(t)) match.all = true;
-    const tm = matchTime(t); if (tm) match.time = tm;
+    const clk = resolveClock(t, 0);
+    if (clk.hour !== null) match.time = pad2(clk.hour) + ':' + pad2(clk.minute);
     const rec = matchRecurrence(t); if (rec) match.recurrence = rec;
-    for (const k in DAYOFF) { if (t.includes(k)) { const d = new Date(); d.setDate(d.getDate() + DAYOFF[k]); match.date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; break; } }
-    let rest = t.replace(/(取消|删掉|删除|去掉|移除|撤销|关掉|改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
-    // 去掉已被 time/recurrence/date 消费掉的文本，避免残留污染 label
+    // 日期增量按「用户在 tz 下的今天」做纯 UTC 日历算术（不用本地 new Date()，避免 UTC 容器下错位）
+    const today = (ctx && ctx.todayTz) || sched().tzDateParts(Date.now(), 'Asia/Shanghai');
+    for (const k in DAYOFF) {
+      if (t.includes(k)) {
+        const dt = new Date(Date.UTC(today.y, today.mo - 1, today.d) + DAYOFF[k] * 86400000);
+        match.date = dt.getUTCFullYear() + '-' + pad2(dt.getUTCMonth() + 1) + '-' + pad2(dt.getUTCDate());
+        break;
+      }
+    }
+    let rest = t.replace(/(查看|查一下|列出|显示|看一下|看下|告诉我|取消|删掉|删除|去掉|移除|撤销|关掉|改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
+    // 去掉已被 time/recurrence/date 消费掉的文本（含时段词，避免 label 残留「晚上」）
+    // 顺序：先剥时刻片段，再剥日锚点（明晚/今晚），最后剥时段词——否则「明晚」会先被剥成「明」
     rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '').replace(OFFSET_RESIDUE_RE, '');
-    rest = rest.replace(/(每天|每日|每一天|工作日|周末|每周|每星期|每个礼拜|周[一二三四五六日天七]|星期[一二三四五六日天七]|礼拜[一二三四五六日天七]|周一到周五|星期一到星期五)/g, '');
+    if (clk.timeConsumed) rest = rest.split(clk.timeConsumed).join('');
     for (const k in DAYOFF) rest = rest.split(k).join('');
+    rest = rest.replace(new RegExp(REC_STRIP_SRC, 'g'), '');
+    if (clk.todConsumed) rest = rest.split(clk.todConsumed).join('');
     rest = rest.replace(/\s+/g, '').trim();
     if (rest) match.label = rest;
     return match;
   }
   // 修改：从「新值描述」中抽取待更新字段
-  function extractUpdate(spec) {
+  function extractUpdate(spec, ctx) {
     const u = {};
-    const tm = matchTime(spec); if (tm) u.time = tm;
+    const clk = resolveClock(spec, 0);
+    if (clk.hour !== null) u.time = pad2(clk.hour) + ':' + pad2(clk.minute);
     const rec = matchRecurrence(spec); if (rec) u.recurrence = rec;
     let m;
     if ((m = spec.match(/提前\s*(半|一|两|二|三|四|五|六|七|八|九|十|\d+)\s*(分钟|分|个?小时|小时|钟头)/))) {
@@ -728,7 +787,9 @@
     }
     let rest = spec.replace(/(改成|改为|调整为|改到|换为|换成|设成|调成|更新为|把|将|这个|那个|我的|我|的|闹钟|提醒|提前|所有|全部|都|一个|那|这|就|请|帮|一下|吧|了|也)/g, '');
     rest = rest.replace(/(\d{1,2})[:：]\d{1,2}/g, '').replace(CLOCK_RE_ALL, '').replace(OFFSET_RESIDUE_RE, '');
-    rest = rest.replace(/(每天|每日|每一天|工作日|周末|每周|每星期|每个礼拜|周[一二三四五六日天七]|星期[一二三四五六日天七]|礼拜[一二三四五六日天七]|周一到周五|星期一到星期五)/g, '');
+    if (clk.timeConsumed) rest = rest.split(clk.timeConsumed).join('');
+    if (clk.todConsumed) rest = rest.split(clk.todConsumed).join('');
+    rest = rest.replace(new RegExp(REC_STRIP_SRC, 'g'), '');
     for (const k in DAYOFF) rest = rest.split(k).join('');
     rest = rest.replace(/\s+/g, '').trim();
     if (rest) u.label = rest;
@@ -745,9 +806,10 @@
     const hasDomain = /(闹钟|提醒)/.test(text);
     const hasSignal = hasDomain || !!matchTime(text) || !!matchRecurrence(text) || /所有|全部|都/.test(text);
     if (CANCEL_RE.test(text) && hasSignal) return { intent: 'cancel' };
-    // 查询类：必须含 闹钟/提醒 域词，且查询词须锚定在「闹钟/提醒」宾语附近
-    // （避免正文内容词「看/几个/多少/呢/都有」误劫持建闹钟句，如「提醒我看书/买几个苹果/背单词呢」）
-    const QUERY_VERB_RE = /(查看|查一下|列出|显示|看一下|看下|告诉我|有哪些|有什么)\s*(?:的|我的)?\s*(闹钟|提醒)/;
+    // 查询类：必须含 闹钟/提醒 域词；查询词与宾语之间允许夹时间词组（「查看晚上8点的闹钟」），
+    // 但限长 ≤12 字且不含句读，避免正文内容词误劫持建闹钟句
+    // （历史 bug 51bb00e：提醒我看书 / 提醒我买几个苹果 / 背单词呢 必须是 create）
+    const QUERY_VERB_RE = /(查看|查一下|列出|显示|看一下|看下|告诉我|有哪些|有什么)[^，。]{0,12}?(闹钟|提醒)/;
     const QUERY_DOMAIN_RE = /(闹钟|提醒)\s*(?:有哪些|有什么|列表|清单|有几个|多少个?|呢|在吗|都有)/;
     if (hasDomain && (QUERY_VERB_RE.test(text) || QUERY_DOMAIN_RE.test(text))) return { intent: 'query' };
     if (/^(我的)?\s*(闹钟|提醒)\s*$/.test(text) || /(闹钟|提醒)\s*(列表|清单)/.test(text)) return { intent: 'query' };
@@ -797,19 +859,112 @@
     return null;
   }
 
+  /**
+   * 把 epoch 毫秒按 tz 拆成墙钟字段与带偏移的 ISO 串。
+   * 创建路径与 match 路径共用这一套（不新造时区换算，全部走 scheduler）。
+   * @param {number} epoch 毫秒
+   * @param {string} tz IANA 时区
+   * @return {{y:number, mo:number, d:number, hh:string, mm:string, iso:string}}
+   */
+  function isoFor(epoch, tz) {
+    const tp = sched().tzDateParts(epoch, tz);                       // tz 下的日历日 {y,mo,d}
+    const whm = sched().wallClockAt(epoch, tz).split(':');           // tz 下的墙钟 HH:MM
+    const offMin = Math.round(sched().tzOffsetAt(tz, epoch) / 60000);
+    const sign = offMin >= 0 ? '+' : '-';
+    const oh = pad2(Math.floor(Math.abs(offMin) / 60));
+    const om = pad2(Math.abs(offMin) % 60);
+    return {
+      y: tp.y, mo: tp.mo, d: tp.d, hh: whm[0], mm: whm[1],
+      iso: `${tp.y}-${pad2(tp.mo)}-${pad2(tp.d)}T${whm[0]}:${whm[1]}:00${sign}${oh}:${om}`
+    };
+  }
+
+  /**
+   * 给 match 条件补「下一次发生」的时间戳与候选集（取消/查询/修改三路径共用）。
+   * 语义：basis = 'next_occurrence'；timestamp 为 Unix 秒（与 alarm.timestamp 同单位）。
+   * 无 time 条件（或 match.all）时不猜，原样返回。
+   * @param {Object} match extractMatch 的产物
+   * @param {{tz:string, nowEpoch:number, todayTz:{y:number, mo:number, d:number}}} ctx 时区上下文
+   * @return {Object} 同一个 match（已附加 timestamp/datetime/timezone/basis[/occurrences]）
+   */
+  function attachMatchTimestamp(match, ctx) {
+    if (!match || !match.time) return match;
+    const tz = ctx.tz;
+    const nowEpoch = ctx.nowEpoch;
+    let y, mo, d;
+    if (match.date) {
+      const p = String(match.date).split('-').map(Number);
+      y = p[0]; mo = p[1]; d = p[2];
+    } else {
+      y = ctx.todayTz.y; mo = ctx.todayTz.mo; d = ctx.todayTz.d;
+    }
+    const hm = match.time.split(':').map(Number);
+    let baseTs = sched().wallToEpoch(y, mo, d, hm[0], hm[1], tz);
+    if (!match.date && baseTs <= nowEpoch) {
+      // 没给日期且今天这个点已过 → 顺延到明天（走 addDays 做日历算术，避免 +86400000 在 DST 下漂移）
+      const nb = sched().addDays(y, mo, d, 1);
+      baseTs = sched().wallToEpoch(nb.y, nb.mo, nb.d, hm[0], hm[1], tz);
+    }
+    const isRecurring = !!(match.recurrence && match.recurrence !== 'none');
+    // 重复闹钟的「下一次发生」以 scheduler.computeNext 为准（唯一权威的重复规则引擎，不重写）
+    let ts = baseTs;
+    if (isRecurring) {
+      const first = sched().computeNext(match.time, match.recurrence, baseTs, tz, nowEpoch);
+      if (first != null) ts = first;
+    }
+    const info = isoFor(ts, tz);
+    match.timestamp = Math.floor(ts / 1000);   // Unix 秒，与 create 路径 alarm.timestamp 一致
+    match.datetime = info.iso;
+    match.timezone = tz;
+    match.basis = 'next_occurrence';
+    // 候选集：重复闹钟才有多次发生，第 1 项与 timestamp 一致，后续继续用 computeNext 推进
+    if (isRecurring) {
+      const occ = [Math.floor(ts / 1000)];
+      let cursor = ts + 1000;
+      for (let i = 0; i < 2; i++) {
+        const next = sched().computeNext(match.time, match.recurrence, baseTs, tz, cursor);
+        if (next == null) break;
+        occ.push(Math.floor(next / 1000));
+        cursor = next + 1000;
+      }
+      match.occurrences = occ;
+    }
+    return match;
+  }
+
   function parseAlarm(text, opts) {
     text = (text || '').trim();
-    // ---- 0. 对话式意图识别（取消 / 修改 / 查询 / 新建） ----
+    // ---- 0. 时区 / 基准时间（提到最前：cancel / query / modify 分支也要用，不能只在 create 分支求值） ----
+    // 支持 opts.now 覆盖"当前时间"基准（开放 API 的确定性测试/回放）；默认取真实当前时间
+    // tz：贯穿全函数的时区（P3）。默认上海；显式 opts.tz 优先（开放 API / 前端检测传入）。
+    const tz = (opts && opts.tz) || 'Asia/Shanghai';
+    const nowEpoch = (opts && opts.now != null)
+      ? (typeof opts.now === 'number' ? opts.now : new Date(opts.now).getTime())
+      : Date.now();
+    const now = new Date(nowEpoch);
+    // 用户在 tz 下的"今天"日历日（跨时区基准，避免 UTC 容器下错位）。所有换算走 scheduler。
+    const todayTz = sched().tzDateParts(nowEpoch, tz);
+    const matchCtx = { tz: tz, nowEpoch: nowEpoch, todayTz: todayTz };
+
+    // ---- 0.1 对话式意图识别（取消 / 修改 / 查询 / 新建） ----
     const intentRes = detectIntent(text);
     if (intentRes.intent === 'cancel') {
-      return { success: true, intent: 'cancel', raw: text, match: extractMatch(text), confidence: 0.9, needs_clarification: false, ambiguities: [] };
+      return {
+        success: true, intent: 'cancel', raw: text,
+        match: attachMatchTimestamp(extractMatch(text, matchCtx), matchCtx),
+        confidence: 0.9, needs_clarification: false, ambiguities: []
+      };
     }
     if (intentRes.intent === 'query') {
-      return { success: true, intent: 'query', raw: text, confidence: 0.9, needs_clarification: false, ambiguities: [] };
+      return {
+        success: true, intent: 'query', raw: text,
+        match: attachMatchTimestamp(extractMatch(text, matchCtx), matchCtx),
+        confidence: 0.9, needs_clarification: false, ambiguities: []
+      };
     }
     if (intentRes.intent === 'modify') {
-      const match = extractMatch(intentRes.oldSpec || '');
-      const update = extractUpdate(intentRes.newSpec || '');
+      const match = attachMatchTimestamp(extractMatch(intentRes.oldSpec || '', matchCtx), matchCtx);
+      const update = extractUpdate(intentRes.newSpec || '', matchCtx);
       if (!Object.keys(update).length) {
         return {
           success: false, intent: 'modify', raw: text, needs_clarification: true,
@@ -828,7 +983,7 @@
     // ---- 1. 重复规则 ----
     let recurrence = 'none';
     let m;
-    if ((m = text.match(/(每天|每日|每一天)/))) { recurrence = 'daily'; consumed.push(m[0]); }
+    if ((m = text.match(new RegExp(DAILY_SRC)))) { recurrence = 'daily'; consumed.push(m[0]); }
     else if ((m = text.match(/(工作日|周一到周五|星期一到星期五|礼拜一到礼拜五|周一到周五四)/))) { recurrence = 'weekdays'; consumed.push(m[0]); }
     else if ((m = text.match(/(周末|周六周日|星期六星期天|周六日)/))) { recurrence = 'weekend'; consumed.push(m[0]); }
     else if ((m = text.match(/每([零一二两三四五六七八九十百\d]+)天/))) { recurrence = 'every:' + cnNum(m[1]); consumed.push(m[0]); }
@@ -866,22 +1021,11 @@
     else if ((m = text.match(/(本个?|本星期|本礼拜|本周)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = false; consumed.push(m[0]); }
     else if ((m = text.match(/(周|星期|礼拜)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = false; consumed.push(m[0]); }
 
-    // ---- 5. 时段词（校正小时） ----
-    let todAdd = compoundTod, todConsumed = null, todNoon = false;
-    if (todAdd === 0) {
-      if ((m = text.match(/(凌晨|拂晓)/))) { todAdd = 0; todConsumed = m[0]; }
-      else if ((m = text.match(/(早上|早晨|上午|清早)/))) { todAdd = 0; todConsumed = m[0]; }
-      else if ((m = text.match(/(中午|正午)/))) { todAdd = 0; todConsumed = m[0]; todNoon = true; }
-      else if ((m = text.match(/(下午|傍晚|黄昏)/))) { todAdd = 12; todConsumed = m[0]; }
-      else if ((m = text.match(/(晚上|夜里|夜晚|深夜)/))) { todAdd = 12; todConsumed = m[0]; }
-      else if ((m = text.match(/(晚|夜)/))) { todAdd = 12; todConsumed = m[0]; }
-      if (todConsumed) consumed.push(todConsumed);
-    }
-
-    // ---- 6. 时刻解析（P0：先掩蔽「两点意见 / 快一点 / 身份证…」等非时刻词，再统一解析） ----
-    let hour = null, minute = 0, timeConsumed = null;
-    const clock = matchClock(text);
-    if (clock) { hour = clock.hour; minute = clock.minute; timeConsumed = clock.consumed; }
+    // ---- 5+6. 时段词校正 + 时刻解析（统一走 resolveClock，与取消/查询/修改路径同源） ----
+    const clk = resolveClock(text, compoundTod);
+    const todAdd = clk.todAdd, todConsumed = clk.todConsumed, todNoon = clk.todNoon;
+    if (todConsumed) consumed.push(todConsumed);
+    const hour = clk.hour, minute = clk.minute, timeConsumed = clk.timeConsumed;
     if (timeConsumed) consumed.push(timeConsumed);
 
     // ---- 2.5 提前提醒（lead） ----
@@ -895,13 +1039,7 @@
     }
 
     // ---- 6.5 绝对日期锚点（含节假日） ----
-    // 支持 opts.now 覆盖"当前时间"基准（开放 API 的确定性测试/回放）；默认取真实当前时间
-    // tz：贯穿全函数的时区（P3）。默认上海；显式 opts.tz 优先（开放 API / 前端检测传入）。
-    const tz = (opts && opts.tz) || 'Asia/Shanghai';
-    const now = (opts && opts.now != null) ? new Date(opts.now) : new Date();
-    const nowEpoch = now.getTime();
-    // 用户在 tz 下的"今天"日历日（跨时区基准，避免 UTC 容器下错位）。所有换算走 scheduler。
-    const todayTz = sched().tzDateParts(nowEpoch, tz);
+    // tz / now / nowEpoch / todayTz 已在函数顶部求值（cancel/query/modify 分支也要用）
     // 日期锚点同样跑在掩蔽文本上：「一日之计在于晨」不能因为含「一日」被当作 1 号
     const timeText = maskNonTime(text);
     // 被掩蔽的片段（量词点 / 副词点 / 超长数字 / 成语 / 人名词）不计入备注
@@ -968,9 +1106,9 @@
       if (hour === null) {
         target = null;
       } else {
-        const h = correctHour(hour, todAdd, todConsumed, todNoon);
+        // hour 已由 resolveClock 做完时段校正，这里直接用于墙钟换算
         // 墙钟 → UTC：一律经 scheduler.wallToEpoch（按 tz 计算，含 DST 修正）
-        target = new Date(sched().wallToEpoch(resolvedYmd.y, resolvedYmd.mo, resolvedYmd.d, h, minute, tz));
+        target = new Date(sched().wallToEpoch(resolvedYmd.y, resolvedYmd.mo, resolvedYmd.d, hour, minute, tz));
         confidence = Math.max(confidence, 0.9);
       }
     } else if (relMs !== null) {
@@ -1005,9 +1143,9 @@
       if (hour === null) {
         target = null;
       } else {
-        const h = correctHour(hour, todAdd, todConsumed, todNoon);
+        // hour 已由 resolveClock 做完时段校正，这里直接用于墙钟换算
         // 墙钟 → UTC：一律经 scheduler.wallToEpoch（按 tz 计算，含 DST 修正）
-        target = new Date(sched().wallToEpoch(baseY, baseM, baseD, h, minute, tz));
+        target = new Date(sched().wallToEpoch(baseY, baseM, baseD, hour, minute, tz));
         confidence = 0.85;
         if (todConsumed) confidence += 0.05;
       }
@@ -1073,14 +1211,11 @@
     }
 
     const pad = n => String(n).padStart(2, '0');
-    // 时区墙钟与偏移一律来自 scheduler（不新造时区换算）：日期/时间按 tz 墙钟，偏移按 tzOffsetAt
-    const tp = sched().tzDateParts(target.getTime(), tz);            // tz 下的日历日 {y,mo,d}
-    const whm = sched().wallClockAt(target.getTime(), tz).split(':'); // tz 下的墙钟 HH:MM
-    const offMin = Math.round(sched().tzOffsetAt(tz, target.getTime()) / 60000);
-    const sign = offMin >= 0 ? '+' : '-';
-    const oh = pad(Math.floor(Math.abs(offMin) / 60));
-    const om = pad(Math.abs(offMin) % 60);
-    const iso = `${tp.y}-${pad(tp.mo)}-${pad(tp.d)}T${whm[0]}:${whm[1]}:00${sign}${oh}:${om}`;
+    // 时区墙钟与偏移一律来自 scheduler（不新造时区换算）：与 attachMatchTimestamp 共用 isoFor
+    const info = isoFor(target.getTime(), tz);
+    const tp = { y: info.y, mo: info.mo, d: info.d };
+    const whm = [info.hh, info.mm];
+    const iso = info.iso;
 
     return {
       success: true, raw: text, intent: 'create',
