@@ -6,3 +6,6 @@ data/
 .env
 node_modules/
 .workbuddy/
+
+# 覆盖率采样临时产物
+cov/
