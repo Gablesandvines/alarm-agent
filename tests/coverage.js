@@ -139,15 +139,17 @@ function lineCoverageOf(filePath, entries) {
  *   run.js        —— 292 条既有回归用例
  *   invariants.js —— 12 条不变量 × 上百条语料的组合输入
  *   fuzz.js       —— 固定种子 42 的 2600+ 条结构化/混沌/畸形输入
+ *   browser_env.js—— 浏览器全局（vm 里 window 有、module/require 无）加载，
+ *                    这是 nlu.js「双端取 scheduler」的浏览器分支唯一入口
  * 三者都是真实断言驱动的输入，命中即为真实可执行路径。
  */
-const SAMPLE_SCRIPTS = ['run.js', 'invariants.js', 'fuzz.js'];
+const SAMPLE_SCRIPTS = ['run.js', 'invariants.js', 'fuzz.js', 'browser_env.js'];
 
 function runLineCoverage() {
   cleanup();
   console.log('\n== A. nlu.js 行覆盖率（NODE_V8_COVERAGE，Node 内置）==');
   console.log('采样脚本：' + SAMPLE_SCRIPTS.map(function (s) { return 'tests/' + s; }).join(' + '));
-  console.log('          （' + require('./cases.js').length + ' 条用例 + 不变量套件 + SEED=42 模糊测试）');
+  console.log('          （' + require('./cases.js').length + ' 条用例 + 不变量套件 + SEED=42 模糊测试 + 浏览器环境）');
   for (let i = 0; i < SAMPLE_SCRIPTS.length; i++) {
     try {
       execFileSync(process.execPath, [path.join(__dirname, SAMPLE_SCRIPTS[i])], {
