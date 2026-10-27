@@ -289,6 +289,32 @@ module.exports = [
   { input: '2023年春节', now: NOW_A, expect: { success: false, needsClarification: true, clarifyType: 'out_of_range', dateResolved: null } },
 
   // ============================================================
+  // date 契约：星期锚点 / 日锚点 / N天后 —— 即使缺钟点，`date` 也必须有值
+  // （根因：`date` 曾在只有 absDate/节日路径时被填，weekTarget/dayOffset 路径一律返回 null）
+  // 基准 NOW_A = 2025-01-21T08:00:00Z = 上海 2025-01-21(周二) 16:00
+  // 期望值独立手算：2025-01-21 为周二 → 周三 01-22、周五 01-24、下周一 01-27、下周六 02-01
+  // ============================================================
+  // —— 星期锚点：缺钟点 → success=false 但 date 有值，且不得凭空给时刻 ——
+  { input: '周五',         now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-24' } },
+  { input: '下周一',       now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-27' } },
+  { input: '本周三',       now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-22' } },
+  { input: '下个星期六',   now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-02-01' } },
+  // —— 日锚点：今/明/后/大后/昨/大前 ——
+  { input: '明天',         now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-22' } },
+  { input: '后天',         now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-23' } },
+  { input: '大后天',       now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-24' } },
+  { input: '昨天',         now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-20' } },
+  // 「大前天」曾因 前天 先命中而被静默算成 -2 天（与 Task5 的「大后天」同一类顺序缺口）
+  { input: '大前天',       now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-18' } },
+  // —— N天后 ——
+  { input: '7天后',        now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2025-01-28' } },
+  // —— 显式年份被「的」隔断：「2019年的6月8号」曾丢掉年份算成 2025-06-08 ——
+  { input: '2019年的6月8号', now: NOW_A, expect: { success: false, needsClarification: true, dateResolved: '2019-06-08' } },
+  // —— 有时刻时：顶层 date 与 alarm.date 必须一致（同一语义，不许两处各说一套） ——
+  { input: '下周五9点提醒我', now: NOW_A, expect: { success: true, time: '09:00', dateFixed: '2025-01-31' } },
+  { input: '大前天下午3点',   now: NOW_A, expect: { success: true, time: '15:00', dateFixed: '2025-01-18' } },
+
+  // ============================================================
   // 遗留 1：无分隔钟点（0900 / 1830 / 830 / 930）
   // 必须有上下文锚点（前 8 字内的时间语境词），且避开年份/金额/数量
   // ============================================================

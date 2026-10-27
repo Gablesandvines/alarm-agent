@@ -62,8 +62,10 @@
     // ISO：YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
     if ((m = text.match(/(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/)))
       return { year: +m[1], month: +m[2], day: +m[3], consumed: m[0] };
-    // 中文完整：YYYY年MM月DD日/号（日/号可选）
-    if ((m = text.match(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/)))
+    // 中文完整：YYYY年MM月DD日/号（日/号可选）。
+    // 「的」必须吃下：之前 `\s*` 匹配不了连接词，「2019年的6月8号」会退化到下面的
+    // 「MM月DD日」分支，把用户明写的年份整个丢掉（→ 2025-06-08，静默算错 6 年）。
+    if ((m = text.match(/(\d{4})\s*年\s*(?:的\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/)))
       return { year: +m[1], month: +m[2], day: +m[3], consumed: m[0] };
     // 中文月-日：MM月DD日/号（日/号必须）
     if ((m = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]/)))
@@ -272,7 +274,7 @@
       return (o.weekNext ? '下' : '本') + names[o.weekTarget];
     }
     if (o.dayOffset) {
-      const map = { '1': '明天', '2': '后天', '3': '大后天', '-1': '昨天', '-2': '前天' };
+      const map = { '1': '明天', '2': '后天', '3': '大后天', '-1': '昨天', '-2': '前天', '-3': '大前天' };
       return map[String(o.dayOffset)] || '那天';
     }
     return '那天';
@@ -299,6 +301,34 @@
       }
     }
     return { y: year, mo: month, d: day };
+  }
+
+  /**
+   * 把「星期锚点」解析成具体公历日（以**周一为一周起点**）。
+   * 单独抽出来的原因：这个日历日既要用于算触发时刻，又要作为 `date` 字段返回，
+   * 两处必须是同一个函数算出来的同一个值，否则「时刻对了但 date 差一天」这类
+   * 契约矛盾会再次出现。全程只用 scheduler.addDays 做日历步进（DST 安全）。
+   * @param {number} weekTarget 0=周日 .. 6=周六
+   * @param {boolean} weekNext true=「下X」，false=「本X / 裸写X」（本周已过则顺延下周）
+   * @param {{y:number, mo:number, d:number}} todayTz 用户在目标时区下的「今天」
+   * @return {{y:number, mo:number, d:number}}
+   */
+  function weekAnchorYmd(weekTarget, weekNext, todayTz) {
+    const curMon = (new Date(Date.UTC(todayTz.y, todayTz.mo - 1, todayTz.d)).getUTCDay() + 6) % 7; // 周一=0 .. 周日=6
+    const tgtMon = (weekTarget + 6) % 7;
+    const daysToThisWeekX = tgtMon - curMon;        // 到「本周该星期」的天数（可为负）
+    const todayNum = todayTz.y * 10000 + todayTz.mo * 100 + todayTz.d;
+    const thisWeekX = sched().addDays(todayTz.y, todayTz.mo, todayTz.d, daysToThisWeekX);
+    const thisWeekXNum = thisWeekX.y * 10000 + thisWeekX.mo * 100 + thisWeekX.d;
+    let addDaysCount;
+    if (weekNext) {
+      addDaysCount = daysToThisWeekX + 7;                // 「下X」= 下一周的那一天
+    } else if (thisWeekXNum >= todayNum) {
+      addDaysCount = daysToThisWeekX;                    // 本周尚未过去 → 本周X
+    } else {
+      addDaysCount = daysToThisWeekX + 7;                // 本周已过 → 顺延到下周
+    }
+    return sched().addDays(todayTz.y, todayTz.mo, todayTz.d, addDaysCount);
   }
 
   // 构造 partial：仅保留已理解、但仍缺具体时刻的锚点，供下一轮结构化合并
@@ -331,7 +361,7 @@
     try { new Intl.DateTimeFormat('en-US', { timeZone: s }); return s; }
     catch (_) { return 'Asia/Shanghai'; }
   }
-  const DAYOFF = { '今天': 0, '今日': 0, '今晚': 0, '今早': 0, '今晨': 0, '明天': 1, '明早': 1, '明晨': 1, '明晚': 1, '明日': 1, '后天': 2, '大后天': 3, '昨天': -1, '前天': -2 };
+  const DAYOFF = { '今天': 0, '今日': 0, '今晚': 0, '今早': 0, '今晨': 0, '明天': 1, '明早': 1, '明晨': 1, '明晚': 1, '明日': 1, '后天': 2, '大后天': 3, '昨天': -1, '前天': -2, '大前天': -3, '大前日': -3 };
   // 日锚点按「key 长度降序」匹配：「大后天」必须先于「后天」命中，否则会算成 +2 天
   // （不能直接改 DAYOFF 字面量顺序：主路径是有序 if-else，且 parseEndDate 依赖既有顺序）
   function dayoffKeysByLen() {
@@ -1046,6 +1076,9 @@
     else if ((m = text.match(/(明天|明早|明晨|明晚|次日)/))) { dayOffset = 1; dayAnchorConsumed = m[0]; }
     else if ((m = text.match(/(今天|今日|今早|今晨|今午|今晚|现在|此刻)/))) { dayOffset = 0; dayAnchorConsumed = m[0]; }
     else if ((m = text.match(/(昨天|昨日)/))) { dayOffset = -1; dayAnchorConsumed = m[0]; }
+    // 「大前天」必须排在「前天」之前：否则会被 前天 抢走，静默算成 -2 天（与「大后天」
+    // 曾被「后天」抢走是同一类顺序缺口，见 Task5 修 2）。
+    else if ((m = text.match(/(大前天|大前日)/))) { dayOffset = -3; dayAnchorConsumed = m[0]; }
     else if ((m = text.match(/(前天)/))) { dayOffset = -2; dayAnchorConsumed = m[0]; }
     let compoundTod = 0;
     if (dayAnchorConsumed && /晚/.test(dayAnchorConsumed)) compoundTod = 12;
@@ -1062,7 +1095,8 @@
 
     // ---- 4. 星期锚点（支持汉字与数字，如 下周6 / 周6 / 星期6 / 礼拜6） ----
     let weekTarget = null, weekNext = false;
-    if ((m = text.match(/(下个?|下星期|下礼拜|下周)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = true; consumed.push(m[0]); }
+    // 「下X」的前缀要能吃下三种组合：下周X / 下个周X / 下个星期X（下个星期六 曾落到裸写分支被算成本周）
+    if ((m = text.match(/(下个?(?:周|星期|礼拜)|下个?)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = true; consumed.push(m[0]); }
     else if ((m = text.match(/(本个?|本星期|本礼拜|本周)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = false; consumed.push(m[0]); }
     else if ((m = text.match(/(周|星期|礼拜)([一二三四五六日天七\d])/))) { weekTarget = weekNum(m[2]); weekNext = false; consumed.push(m[0]); }
 
@@ -1146,6 +1180,22 @@
     const resolvedDateStr = resolvedYmd
       ? resolvedYmd.y + '-' + pad2(resolvedYmd.mo) + '-' + pad2(resolvedYmd.d) : null;
 
+    // 「已解析出的公历日」——`date` 字段的唯一来源：绝对日期 / 星期锚点 / 日锚点 三条路径共用。
+    // 契约：句子只给日期不给钟点时，date 也必须有值；但**不许**因此凭空编一个时刻
+    // （缺钟点仍旧走澄清追问，time 保持为空）。
+    // 相对时长（relMs）路径不在此列：它的日历日由触发时刻所在的 tz 日决定，
+    // 不能拿句中的日锚点顶替（「明天10分钟后」的时刻可能在今天）。
+    let anchorYmd = resolvedYmd;
+    if (!anchorYmd && relMs === null) {
+      if (weekTarget !== null) {
+        anchorYmd = weekAnchorYmd(weekTarget, weekNext, todayTz);
+      } else if (dayAnchorConsumed !== null || dayOffset !== 0) {
+        anchorYmd = sched().addDays(todayTz.y, todayTz.mo, todayTz.d, dayOffset);
+      }
+    }
+    const anchorDateStr = anchorYmd
+      ? anchorYmd.y + '-' + pad2(anchorYmd.mo) + '-' + pad2(anchorYmd.d) : null;
+
     if (absDate) {
       consumed.push(absDate.consumed);
       if (hour === null) {
@@ -1161,30 +1211,10 @@
       target = new Date(now.getTime() + relMs);
       confidence = 0.9;
     } else {
-      // 以用户在 tz 下的"今天"为基准，所有日历日步进走 scheduler.addDays，避免与闹钟时区错位
+      // 以用户在 tz 下的"今天"为基准，所有日历日步进走 scheduler.addDays，避免与闹钟时区错位。
+      // 星期锚点与日锚点的日历日已在上面算进 anchorYmd（与 `date` 字段共用同一结果）。
       let baseY = todayTz.y, baseM = todayTz.mo, baseD = todayTz.d;
-      if (weekTarget !== null) {
-        // 以「周一为一周起点」计算：本周X / 下周X / 裸写X
-        const curMon = (new Date(Date.UTC(todayTz.y, todayTz.mo - 1, todayTz.d)).getUTCDay() + 6) % 7; // 周一=0 .. 周日=6
-        const tgtMon = (weekTarget + 6) % 7;
-        const daysToThisWeekX = tgtMon - curMon;        // 到"本周该星期"的天数（可为负）
-        const todayNum = todayTz.y * 10000 + todayTz.mo * 100 + todayTz.d;
-        const thisWeekX = sched().addDays(todayTz.y, todayTz.mo, todayTz.d, daysToThisWeekX);
-        const thisWeekXNum = thisWeekX.y * 10000 + thisWeekX.mo * 100 + thisWeekX.d;
-        let addDaysCount;
-        if (weekNext) {
-          addDaysCount = daysToThisWeekX + 7;                // 「下X」= 下一周的那一天
-        } else if (thisWeekXNum >= todayNum) {
-          addDaysCount = daysToThisWeekX;                    // 本周尚未过去 → 本周X
-        } else {
-          addDaysCount = daysToThisWeekX + 7;                // 本周已过 → 顺延到下周
-        }
-        const base = sched().addDays(todayTz.y, todayTz.mo, todayTz.d, addDaysCount);
-        baseY = base.y; baseM = base.mo; baseD = base.d;
-      } else {
-        const base = sched().addDays(todayTz.y, todayTz.mo, todayTz.d, dayOffset);
-        baseY = base.y; baseM = base.mo; baseD = base.d;
-      }
+      if (anchorYmd) { baseY = anchorYmd.y; baseM = anchorYmd.mo; baseD = anchorYmd.d; }
       if (hour === null) {
         target = null;
       } else {
@@ -1250,8 +1280,8 @@
       ambiguities.push(clarification.question);
       return {
         success: false, raw: text, alarm: null, intent: 'create',
-        // date：已解析出的公历日（节日/绝对日期无时刻时也有值，time 为空）
-        date: resolvedDateStr,
+        // date：已解析出的公历日（绝对日期/节日/星期锚点/日锚点，即使缺钟点也有值，time 为空）
+        date: anchorDateStr,
         confidence: Number(confidence.toFixed(2)),
         needs_clarification: true, ambiguities, clarification,
         partial: buildPartial({ recurrence, weekTarget, weekNext, dayOffset, absDate, leadMin, label })
@@ -1267,7 +1297,9 @@
 
     return {
       success: true, raw: text, intent: 'create',
-      date: resolvedDateStr || `${tp.y}-${pad(tp.mo)}-${pad(tp.d)}`,
+      // 已有 alarm 时，顶层 date 与 alarm.date 必须**是同一个值**（同口径，避免两个字段互相打架）：
+      // 提前提醒把触发点挪过午夜时（明天0点提前10分钟 → 今天23:50），以实际落地的公历日为准。
+      date: `${tp.y}-${pad(tp.mo)}-${pad(tp.d)}`,
       alarm: {
         timestamp: Math.floor(target.getTime() / 1000), // Unix 秒级时间戳（UTC）
         datetime: iso,

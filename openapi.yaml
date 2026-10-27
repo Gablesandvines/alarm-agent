@@ -599,6 +599,20 @@ components:
             语句意图。create=新建闹钟（结果在 alarm）；cancel=取消（条件在 match）；
             modify=修改（旧条件在 match，新值在 update）；query=查询（条件在 match）。
           example: "cancel"
+        date:
+          type: string
+          nullable: true
+          pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+          description: >
+            「已解析出的公历日」（YYYY-MM-DD）。取值与 `alarm.date` / `match.date` 同口径，
+            且**有 alarm 时与本层 `alarm.date` 必然相等**。
+            无 alarm（缺钟点，`success=false` + `needs_clarification=true`）时，
+            只要语句给出了**日锚点**本字段就有值，与是否给出钟点无关。日锚点来源：
+            绝对日期（2026年10月10日）、节日/节气（春节/清明）、星期锚点（周五/下周一/本周三）、
+            日锚点（今天/明天/后天/大后天/昨天/前天/大前天）、N天后。
+            此时 `alarm` 为 null 但本字段有值——**不会**为了填 date 而凭空编一个时刻。
+            纯相对时长（30分钟后）在无 alarm 时不填本字段：它没有日锚点。
+          example: "2026-10-23"
         match:
           $ref: '#/components/schemas/MatchCriteria'
     MatchCriteria:

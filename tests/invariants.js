@@ -407,6 +407,45 @@ const INPUTS = CASES.map(function (c) { return { input: c.input, opts: optsOf(c)
   closeSection(rec);
 })();
 
+/* ============================================================
+ * 不变量 13：date 契约自洽
+ *   ① 只要有 alarm，顶层 date 必须与 alarm.date 完全相等
+ *      （两个字段同一语义；历史上曾出现「顶层按句中日锚点、alarm 按实际触发日」互相打架）
+ *   ② 有日锚点却缺钟点时，date 必须有值（否则「已解析出的公历日」这个契约就是空话）
+ *   ③ 任何情况下 date 只允许是 null 或 YYYY-MM-DD
+ * ============================================================ */
+(function () {
+  const rec = section('13 date 契约自洽');
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  INPUTS.forEach(function (x) {
+    const r = parseAlarm(x.input, x.opts);
+    const top = (r.date === undefined) ? null : r.date;
+    if (r.alarm) {
+      ok('13.alarm-eq ' + x.input, top === r.alarm.date,
+        `${x.input} → 顶层 date="${top}" 与 alarm.date="${r.alarm.date}" 不等`);
+      ok('13.alarm-format ' + x.input, DATE_RE.test(r.alarm.date),
+        `${x.input} → alarm.date="${r.alarm.date}" 不是 YYYY-MM-DD`);
+    }
+    if (top !== null) {
+      ok('13.format ' + x.input, DATE_RE.test(top), `${x.input} → date="${top}" 不是 YYYY-MM-DD`);
+    }
+  });
+  // 日锚点缺钟点：date 必须有值，且不许凭空编一个时刻（time 仍为空/追问）
+  const DAY_ONLY = [
+    '明天', '今天', '后天', '大后天', '昨天', '前天', '大前天',
+    '周五', '下周一', '本周三', '这周3', '下个星期六', '周日',
+    '7天后', '10天后', '2026年10月10日', '10月10号'
+  ];
+  DAY_ONLY.forEach(function (t) {
+    const r = parseAlarm(t, { now: NOW, tz: 'Asia/Shanghai' });
+    ok('13.day-only-date ' + t, typeof r.date === 'string' && DATE_RE.test(r.date),
+      `${t} → date="${r.date}" 应为具体公历日`);
+    ok('13.day-only-no-time ' + t, !r.alarm || r.alarm.time === undefined || r.alarm.time === null,
+      `${t} → 只有日期却编出了时刻 ${r.alarm && r.alarm.time}`);
+  });
+  closeSection(rec);
+})();
+
 /* ============================================================ 汇总 */
 console.log('\n== nlu.js 不变量套件 ==');
 console.log('语料：' + INPUTS.length + ' 条既有用例 + 内置畸形输入');
