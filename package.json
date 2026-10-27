@@ -5,9 +5,12 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node tests/scheduler.js && node tests/browser_env.js && node tests/run.js && node tests/single_user.js && node test_openapi.js && node tests/push_api.js && node tests/push_client.js",
+    "test": "node tests/scheduler.js && node tests/browser_env.js && node tests/run.js && node tests/single_user.js && node test_openapi.js && node tests/push_api.js && node tests/push_client.js && node tests/invariants.js && node tests/fuzz.js",
     "test:engine": "node tests/run.js",
     "test:scheduler": "node tests/scheduler.js",
+    "test:invariants": "node tests/invariants.js",
+    "test:coverage": "node tests/coverage.js",
+    "fuzz": "node tests/fuzz.js",
     "keys": "node manage_keys.js"
   },
   "dependencies": {

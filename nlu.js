@@ -639,7 +639,11 @@
    * 支持：半小时=30min、一个半小时=90min、N个半小时=N×60+30、半天=12h、中文数字、多段相加
    * （2小时18分钟 = 138min）。前缀除「再过/过了/经过」外还接受「倒计时/倒数」
    * （倒计时30秒 = now + 30s，与「30秒后」完全同一条路径，秒级精度不变）。 */
-  const DUR_NUM_SRC = '(?:\\d+|[一二两三四五六七八九十]+)';
+  // 量化词必须**有界**：模型侧输入没有长度限制，`[一二两三四五六七八九十]+` 这种无界贪婪
+  // 遇到 10k 大写中文数字串会退化成 O(n²)（实测 sufRe 490ms / parseAlarm 1078ms）。
+  // 真实时长数字不超过 6 个中文字（二十三/一百零五这类也没问题，超出 6 字本身就不是时长），
+  // 阿拉伯数字限 18 位（>16 位已超 Number.MAX_SAFE_INTEGER）。
+  const DUR_NUM_SRC = '(?:\\d{1,18}|[一二两三四五六七八九十]{1,6})';
   const DUR_SEG_SRC = [
     DUR_NUM_SRC + '个半(?:小时|钟头)',   // 一个半小时 = 90min / 两个半小时 = 150min
     '半个?(?:小时|钟头)',                // 半小时 = 30min
@@ -648,9 +652,14 @@
     DUR_NUM_SRC + '(?:分钟|分)',
     DUR_NUM_SRC + '(?:秒钟|秒)'
   ].join('|');
-  const DUR_RUN_SRC = '(?:' + DUR_SEG_SRC + ')+';
+  // 段数同样有界：真实说法最多「N小时N分钟N秒」3 段，留 4 段余量；无界 `+` 会让
+  // 「半小时半小时半小时…」这类串在每个起点上都重试一遍，同样是 O(n²)。
+  const DUR_RUN_SRC = '(?:' + DUR_SEG_SRC + '){1,4}';
   const DUR_PRE_SRC = '(?:再过|过了|经过|倒计时|倒数)';
   const DUR_SUF_SRC = '(?:之后|以后|之内|以内|后|内)';
+  // 相对时长上限（10 年）。既是「闹钟不可能这么远」的语义上限，
+  // 也是防止 now + total 溢出 Date 可表示范围的护栏。
+  const MAX_REL_MS = 10 * 365 * 86400000;
 
   /**
    * 把一段时长描述按片段求和。
@@ -687,7 +696,12 @@
       }
       rest = rest.slice(m[0].length);
     }
-    return (rest.length || !total) ? null : total;
+    if (rest.length || !total) return null;
+    // 量级护栏：相对时长上限 10 年。超过它的说法一定不是闹钟，而且 new Date(now + total)
+    // 会溢出 Date 可表示范围（±8.64e15 ms），下游 tzDateParts 会抛 RangeError。
+    // 实测 `9999999999999999分钟后` 直接抛 Invalid time value（500 级崩溃）。
+    if (!Number.isFinite(total) || total > MAX_REL_MS) return null;
+    return total;
   }
 
   /**
@@ -892,13 +906,17 @@
   function isoFor(epoch, tz) {
     const tp = sched().tzDateParts(epoch, tz);                       // tz 下的日历日 {y,mo,d}
     const whm = sched().wallClockAt(epoch, tz).split(':');           // tz 下的墙钟 HH:MM
-    const offMin = Math.round(sched().tzOffsetAt(tz, epoch) / 60000);
+    const offMs = sched().tzOffsetAt(tz, epoch);
+    const offMin = Math.round(offMs / 60000);
     const sign = offMin >= 0 ? '+' : '-';
     const oh = pad2(Math.floor(Math.abs(offMin) / 60));
     const om = pad2(Math.abs(offMin) % 60);
+    // 秒数：wallClockAt 只到分钟，秒要从「epoch + 实际偏移」直接取，否则 ISO 串与 timestamp 自相矛盾
+    // （相对时长类闹钟 now+30s 会落在 :30 秒，硬写 :00 会让 datetime 比 timestamp 早最多 59s）
+    const ss = pad2(Math.floor((epoch + offMs) / 1000) % 60);
     return {
-      y: tp.y, mo: tp.mo, d: tp.d, hh: whm[0], mm: whm[1],
-      iso: `${tp.y}-${pad2(tp.mo)}-${pad2(tp.d)}T${whm[0]}:${whm[1]}:00${sign}${oh}:${om}`
+      y: tp.y, mo: tp.mo, d: tp.d, hh: whm[0], mm: whm[1], ss: ss,
+      iso: `${tp.y}-${pad2(tp.mo)}-${pad2(tp.d)}T${whm[0]}:${whm[1]}:${ss}${sign}${oh}:${om}`
     };
   }
 
@@ -957,7 +975,8 @@
   }
 
   function parseAlarm(text, opts) {
-    text = (text || '').trim();
+    // 入参规范化：非字符串（number/object/array）不该让 .trim() 抛 TypeError
+    text = (text === null || text === undefined) ? '' : String(text).trim();
     // ---- 0. 时区 / 基准时间（提到最前：cancel / query / modify 分支也要用，不能只在 create 分支求值） ----
     // 支持 opts.now 覆盖"当前时间"基准（开放 API 的确定性测试/回放）；默认取真实当前时间
     // tz：贯穿全函数的时区（P3）。默认上海；显式 opts.tz 优先（开放 API / 前端检测传入）。
@@ -1013,7 +1032,7 @@
     else if ((m = text.match(/每([零一二两三四五六七八九十百\d]+)天/))) { recurrence = 'every:' + cnNum(m[1]); consumed.push(m[0]); }
     else if ((m = text.match(/(隔|双)(周|星期|礼拜|个)([一二三四五六日天七\d])/))) { recurrence = 'biweekly:' + weekNum(m[3]); consumed.push(m[0]); }
     else if ((m = text.match(/(每周|每星期|每个礼拜)([一二三四五六日天七\d])/))) { recurrence = 'weekly:' + weekNum(m[2]); consumed.push(m[0]); }
-    else if ((m = text.match(/(每个月|每月)(\d{1,2}|[一二两三四五六七八九十]+)(号|日)/))) { recurrence = 'monthly:' + cnNum(m[2]); consumed.push(m[0]); }
+    else if ((m = text.match(/(每个月|每月)(\d{1,2}|[一二两三四五六七八九十]{1,4})(号|日)/))) { recurrence = 'monthly:' + cnNum(m[2]); consumed.push(m[0]); }
 
     // ---- 2. 相对时间（复合时长求和；「天」级交给日期逻辑，避免把 6天后 当成 +6 天时长） ----
     let relMs = null;
@@ -1033,7 +1052,9 @@
     if (dayAnchorConsumed) consumed.push(dayAnchorConsumed);
     // ---- 3.5 「N天后」日期增量（是日期锚点，不是时长；「后天」已在 3 里优先处理） ----
     if (dayAnchorConsumed === null) {
-      if ((m = text.match(/(\d+|[一二两三四五六七八九十]+)\s*天\s*(?:之后|以后|后)/))) {
+      // 量化词有界：无界 `[一二两三四五六七八九十]+` 遇到 10k 中文数字串，
+      // 每个起点都要回溯一遍（O(n²)，实测 235ms）；真实「N天」不会超过 4 个字。
+      if ((m = text.match(/(\d{1,6}|[一二两三四五六七八九十]{1,4})\s*天\s*(?:之后|以后|后)/))) {
         const n = cnNum(m[1]);
         if (n !== null) { dayOffset = n; dayAnchorConsumed = m[0]; consumed.push(m[0]); }
       }
@@ -1177,6 +1198,9 @@
 
     // 节日年份越界：不猜日期，也不回落到「今天 + 时刻」
     if (holidayError) target = null;
+    // 兜底护栏：任何路径算出的 Date 若不可表示（NaN），一律当「没算出来」走澄清，
+    // 绝不让下游 tzDateParts/wallClockAt 抛 RangeError（那会变成一次 500）。
+    if (target && !Number.isFinite(target.getTime())) target = null;
 
     // ---- 7.5 提前提醒：触发时间前移 leadMin 分钟 ----
     if (leadMin !== null && target) {

@@ -1,0 +1,12 @@
+{
+  "input": "99999999999小时后",
+  "opts": {
+    "now": 1792633380000,
+    "tz": "Asia/Shanghai"
+  },
+  "kind": "throw",
+  "error": "RangeError: Invalid time value（同上，小时单位路径）",
+  "status": "fixed",
+  "fixed_in": "f752c07+（相对时长 10 年上限 + target 有限性护栏）",
+  "found_at": "2026-10-22"
+}
